@@ -4,6 +4,7 @@ import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.LoginRequest;
+import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
 import com.momstarter.error.ApiException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -78,6 +79,15 @@ public class AuthService {
         String accessToken = jwt.issueAccessToken(user.getId(), user.isEmailVerified());
         return new AuthTokens(accessToken, issued.rawToken(),
                 jwt.accessTtlSeconds(), RefreshTokenService.REFRESH_TTL.toSeconds());
+    }
+
+    /** Server-side logout: revoke the presented device family, or every family with allDevices. */
+    public void logout(LogoutRequest req, UUID userId) {
+        if (req != null && Boolean.TRUE.equals(req.allDevices())) {
+            refreshTokens.revokeAllForUser(userId);
+        } else if (req != null && req.refreshToken() != null && !req.refreshToken().isBlank()) {
+            refreshTokens.revokeByRawToken(req.refreshToken());
+        }
     }
 
     static String normaliseEmail(String email) {
