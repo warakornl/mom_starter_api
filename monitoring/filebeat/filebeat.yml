@@ -1,0 +1,56 @@
+# Filebeat configuration — Docker Compose dev
+# Reads Docker container log files and ships JSON-structured logs to Elasticsearch.
+#
+# How it works:
+#   1. Spring Boot (logback-spring.xml) writes JSON lines to stdout.
+#   2. Docker wraps each line in its own JSON envelope and writes to:
+#        /var/lib/docker/containers/<id>/<id>-json.log
+#   3. Filebeat reads those files via the `container` input type,
+#      which automatically unwraps the Docker envelope and puts the log line in `message`.
+#   4. The decode_json_fields processor parses `message` as JSON,
+#      promoting @timestamp, level, logger_name, MDC fields (requestId, method, path,
+#      status, durationMs) to top-level fields that Kibana can filter/visualise.
+#   5. add_docker_metadata enriches each event with container name, image, etc.
+#
+# SECURITY: Filebeat runs as root (required to read docker socket and container logs).
+#           This is dev-only. In prod, use CloudWatch Logs (see docs/architecture/
+#           infrastructure-diagram.md) — no sidecar needed on Fargate/ECS.
+
+filebeat.inputs:
+  - type: container
+    paths:
+      - "/var/lib/docker/containers/*/*.log"
+    stream: all
+    # Parse the inner JSON log line produced by LogstashEncoder
+    processors:
+      - decode_json_fields:
+          fields: ["message"]
+          target: ""
+          overwrite_keys: true
+          add_error_key: false
+
+processors:
+  # Enrich each event with Docker metadata (container.name, image.name, etc.)
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+  # Drop health-check noise from Prometheus scrapes logged by actuator (optional tuning)
+  - drop_fields:
+      fields: ["agent.ephemeral_id", "agent.hostname", "agent.id", "agent.version"]
+      ignore_missing: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  # Daily indices: mom-starter-api-2026.06.29
+  index: "mom-starter-api-%{+yyyy.MM.dd}"
+
+# Disable Filebeat's ILM (Index Lifecycle Management) — use simple daily indices for dev
+setup.ilm.enabled: false
+setup.template.name: "mom-starter-api"
+setup.template.pattern: "mom-starter-api-*"
+
+# Kibana host — used by `filebeat setup` to create index patterns (run once manually if needed)
+setup.kibana:
+  host: "kibana:5601"
+
+logging.level: warning
+logging.to_files: false

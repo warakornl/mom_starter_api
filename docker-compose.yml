@@ -1,0 +1,182 @@
+# ============================================================
+# Mom Starter API — Full Observability Stack (DEV ONLY)
+# Services: api · postgres · prometheus · grafana · elasticsearch · kibana · filebeat
+#
+# Usage:
+#   docker compose up --build          # first run (builds API image)
+#   docker compose up -d               # subsequent runs (detached)
+#   docker compose down -v             # stop + remove volumes
+#
+# Ports:
+#   API          http://localhost:8080    (context-path /v1)
+#   Prometheus   http://localhost:9090
+#   Grafana      http://localhost:3000    (admin / admin — dev only)
+#   Kibana       http://localhost:5601
+#   Elasticsearch http://localhost:9200  (security disabled — dev only)
+#
+# Secrets: DB_PASSWORD is read from environment or falls back to a dev-only default.
+# NEVER use the dev default password in production.
+# Production uses AWS Secrets Manager + RDS — see docs/architecture/infrastructure-diagram.md
+# ============================================================
+
+services:
+
+  # ─── PostgreSQL 16 ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: momstarter
+      POSTGRES_USER: ${DB_USERNAME:-momstarter}
+      # DEV-ONLY default — override with a strong secret in non-dev environments
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-momstarter_dev_only}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-momstarter} -d momstarter"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # ─── Spring Boot API ────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # Override datasource URL to point at the postgres service in this compose network
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/momstarter
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-momstarter}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-momstarter_dev_only}
+      # Google Sign-In — leave blank to disable; set in .env file for local testing
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      # NOTE: We do NOT activate the `local` Spring profile here so that:
+      #   (a) auto-verify-email stays OFF (DevModeGuard would reject it anyway — DB is not localhost)
+      #   (b) logback uses JSON appender (profile != local/test)
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # ─── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # ─── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    environment:
+      # DEV-ONLY credentials — change before exposing outside localhost
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/mom-starter-dashboard.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # ─── Elasticsearch 8 (single-node, security OFF — DEV ONLY) ────────────────
+  # RAM: ES_JAVA_OPTS limits the JVM heap to 512 MB; container mem_limit is 1 GB.
+  # For production use AWS OpenSearch Service (managed, VPC-only, encrypted).
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    environment:
+      discovery.type: single-node
+      # SECURITY DISABLED — acceptable for dev Docker network only.
+      # PROD: use AWS OpenSearch / enable xpack.security with TLS + credentials.
+      xpack.security.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 40s
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # ─── Kibana ─────────────────────────────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+  # ─── Filebeat ───────────────────────────────────────────────────────────────
+  # Reads Docker container log files and ships structured JSON logs to Elasticsearch.
+  # Runs as root to access /var/run/docker.sock and /var/lib/docker/containers.
+  # PROD: not needed — use AWS CloudWatch Logs (ECS/Fargate native log driver).
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.4
+    user: root
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    volumes:
+      - ./monitoring/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - internal
+    restart: unless-stopped
+
+# ─── Named volumes (data persists across container restarts) ─────────────────
+volumes:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+  elasticsearch_data:
+
+# ─── Internal bridge network ──────────────────────────────────────────────────
+networks:
+  internal:
+    driver: bridge

@@ -1,0 +1,27 @@
+# Build output — never copy into build context
+target/
+
+# Git history — not needed in image
+.git/
+.gitignore
+
+# macOS cruft
+.DS_Store
+
+# Test sources are not needed for production image build
+# (tests are run in CI, not inside Docker)
+src/test/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# Local / environment files — never bake credentials into image
+*.env
+.env*
+application-local.yml
+
+# Docker files themselves (no need to copy)
+Dockerfile
+docker-compose*.yml

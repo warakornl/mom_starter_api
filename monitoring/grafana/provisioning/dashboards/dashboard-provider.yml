@@ -1,0 +1,15 @@
+# Grafana dashboard provisioning provider
+# Grafana loads all JSON files from the configured path on startup.
+apiVersion: 1
+
+providers:
+  - name: "mom-starter"
+    orgId: 1
+    folder: "Mom Starter"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
