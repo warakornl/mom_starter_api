@@ -69,11 +69,19 @@ public class PregnancyProfile {
     private String lifecycle = "pregnant";
 
     /**
-     * Absolute UTC instant of birth (set by the deferred birth-event phase).
-     * Null while {@code lifecycle = "pregnant"}.
+     * Floating-civil birth date (zoneless {@code YYYY-MM-DD} — FLAG-1 / data-model §3.1 OQ-11).
+     * {@code null} while {@code lifecycle = "pregnant"}. Set by
+     * {@code POST /pregnancy-profile/birth-event} (deferred endpoint).
+     *
+     * <p>The postpartum clock is computed civil-day-wise from this anchor:
+     * {@code postpartumDays = max(0, civilDaysBetween(birthDate, today))} — identical rule to the
+     * gestational week counter (FLAG-1). Time-of-day of birth is not part of this anchor
+     * (it belongs to a future {@code BabyProfile} birth record if ever needed).
+     *
+     * <p>Java {@link LocalDate} maps to DB {@code date} (no time, no timezone).
      */
-    @Column(name = "birth_datetime")
-    private Instant birthDatetime;
+    @Column(name = "birth_date")
+    private LocalDate birthDate;
 
     /**
      * Free-value delivery type (e.g. "vaginal", "cesarean"). Nullable; set at birth event.
@@ -173,12 +181,12 @@ public class PregnancyProfile {
         this.lifecycle = lifecycle;
     }
 
-    public Instant getBirthDatetime() {
-        return birthDatetime;
+    public LocalDate getBirthDate() {
+        return birthDate;
     }
 
-    public void setBirthDatetime(Instant birthDatetime) {
-        this.birthDatetime = birthDatetime;
+    public void setBirthDate(LocalDate birthDate) {
+        this.birthDate = birthDate;
     }
 
     public String getDeliveryType() {

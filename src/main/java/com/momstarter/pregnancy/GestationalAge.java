@@ -19,7 +19,7 @@ import java.time.temporal.ChronoUnit;
  * {@link Math#floorDiv}/{@link Math#floorMod} round toward −∞ — so a naïve port drifts between
  * backend and mobile (e.g. {@code daysPregnant = −1}: truncating gives week 0, floor gives week −1).
  *
- * <p><strong>Scope</strong>: the {@code pregnant} lifecycle only ({@code birthDatetime == null}).
+ * <p><strong>Scope</strong>: the {@code pregnant} lifecycle only ({@code birth_date IS NULL}).
  * Postpartum counting is deferred to the birth-event phase (OQ-8/10/11).
  *
  * @param daysPregnant       280 − daysUntilEdd; negative in the pre-pregnancy EDD-window band
