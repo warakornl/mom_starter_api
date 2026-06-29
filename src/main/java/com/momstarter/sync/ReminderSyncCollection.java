@@ -1,6 +1,7 @@
 package com.momstarter.sync;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.momstarter.reminder.Reminder;
 import com.momstarter.reminder.ReminderRepository;
@@ -113,8 +114,27 @@ class ReminderSyncCollection implements SyncCollection {
                     new Rejected(COLLECTION, null, "validation_error", "id is required"));
         }
 
-        // Validate recurrenceRule grammar (FLAG-4 §a)
-        String recurrenceRuleJson = extractString(record, "recurrenceRule");
+        // Validate recurrenceRule grammar (FLAG-4 §a).
+        // The wire contract (api-contract §ReminderInput) requires recurrenceRule to be a
+        // nested JSON object, not a string.  When Jackson deserialises the push body the
+        // field arrives as a LinkedHashMap; we serialise it back to a canonical JSON string
+        // before grammar validation so that validateRecurrenceRule() always operates on
+        // well-formed JSON.  A pre-serialised String value is accepted as a safety net.
+        Object recurrenceRuleRaw = record.get("recurrenceRule");
+        String recurrenceRuleJson;
+        if (recurrenceRuleRaw == null) {
+            recurrenceRuleJson = null;
+        } else if (recurrenceRuleRaw instanceof String s) {
+            recurrenceRuleJson = s;
+        } else {
+            try {
+                recurrenceRuleJson = objectMapper.writeValueAsString(recurrenceRuleRaw);
+            } catch (Exception e) {
+                return new SyncApplyResult.RejectedResult(
+                        new Rejected(COLLECTION, id, "validation_error",
+                                "recurrenceRule is not serializable"));
+            }
+        }
         String ruleError = validateRecurrenceRule(recurrenceRuleJson);
         if (ruleError != null) {
             return new SyncApplyResult.RejectedResult(
