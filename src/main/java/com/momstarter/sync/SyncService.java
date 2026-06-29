@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -113,9 +114,13 @@ public class SyncService {
                                   SyncPushRequest request,
                                   String idempotencyKey,
                                   long payloadBytes) {
-        // --- Validate required field: lastPulledAt ---
+        // --- Validate required fields: lastPulledAt and changes ---
+        // Both are structurally required → 400 (contract §8: "whole-call 400 for missing changes/lastPulledAt")
         if (request.lastPulledAt() == null) {
             throw new ApiException(400, "validation_error", "lastPulledAt is required");
+        }
+        if (request.changes() == null) {
+            throw new ApiException(400, "validation_error", "changes is required");
         }
 
         // --- Idempotency replay (§10 / OQ-SYNC-15) ---
@@ -171,14 +176,27 @@ public class SyncService {
 
             // Batch-pre-load existing entities (avoid N+1)
             Set<UUID> allIds = collectIds(changes);
-            Map<UUID, Object> existingByIds = collection.loadExisting(userId, allIds);
+            Map<UUID, Object> existingByIds = new HashMap<>(collection.loadExisting(userId, allIds));
 
-            // Apply: created → updated → deleted (same-id: deleted wins per apply-order)
+            // Apply: created → updated → deleted (same-id: deleted wins per apply-order).
+            // Use a per-collection LinkedHashMap<id→Applied> so that a later bucket's result
+            // replaces an earlier one for the same id — contract §1: "one entry per id".
+            Map<UUID, Applied> collApplied = new LinkedHashMap<>();
+
             applyUpserts(userId, collection, changes.created(), existingByIds,
-                         applied, conflicts, rejected);
+                         collApplied, conflicts, rejected);
+
+            // Refresh the existingByIds map after created bucket so that newly-INSERTed entities
+            // are visible to updated/deleted buckets (fixes same-id multi-bucket PK crash, §1).
+            if (!changes.created().isEmpty()) {
+                existingByIds.putAll(collection.loadExisting(userId, allIds));
+            }
+
             applyUpserts(userId, collection, changes.updated(), existingByIds,
-                         applied, conflicts, rejected);
-            applyDeletes(userId, collection, changes.deleted(), existingByIds, applied);
+                         collApplied, conflicts, rejected);
+            applyDeletes(userId, collection, changes.deleted(), existingByIds, collApplied);
+
+            applied.addAll(collApplied.values());
         }
 
         SyncPushResponse response = new SyncPushResponse(Instant.now(), applied, conflicts, rejected);
@@ -191,10 +209,16 @@ public class SyncService {
         return response;
     }
 
+    /**
+     * Applies upsert records (created or updated bucket) and puts the result into
+     * {@code appliedMap} keyed by record id. A later bucket for the same id REPLACES
+     * the earlier entry — contract §1: "one entry per id, not one per bucket".
+     */
     private void applyUpserts(UUID userId, SyncCollection collection,
                                List<Map<String, Object>> records,
                                Map<UUID, Object> existingByIds,
-                               List<Applied> applied, List<Conflict> conflicts, List<Rejected> rejected) {
+                               Map<UUID, Applied> appliedMap,
+                               List<Conflict> conflicts, List<Rejected> rejected) {
         for (Map<String, Object> record : records) {
             Object idRaw = record.get("id");
             UUID id = null;
@@ -204,23 +228,27 @@ public class SyncService {
             Object existing = (id != null) ? existingByIds.get(id) : null;
             SyncApplyResult result = collection.applyUpsert(userId, record, existing);
             switch (result) {
-                case SyncApplyResult.Success s -> applied.add(s.applied());
+                case SyncApplyResult.Success s -> appliedMap.put(s.applied().id(), s.applied());
                 case SyncApplyResult.ConflictResult c -> conflicts.add(c.conflict());
                 case SyncApplyResult.RejectedResult r -> rejected.add(r.rejected());
             }
         }
     }
 
+    /**
+     * Applies tombstone deletes and puts the result into {@code appliedMap} keyed by id,
+     * replacing any earlier applied entry for the same id (deleted wins per apply-order, §1).
+     */
     private void applyDeletes(UUID userId, SyncCollection collection,
                                List<String> deletedIds,
                                Map<UUID, Object> existingByIds,
-                               List<Applied> applied) {
+                               Map<UUID, Applied> appliedMap) {
         for (String idStr : deletedIds) {
             try {
                 UUID id = UUID.fromString(idStr);
                 Object existing = existingByIds.get(id);
                 Applied result = collection.applyDelete(userId, id, existing);
-                applied.add(result);
+                appliedMap.put(id, result); // replaces earlier created/updated entry for same id
             } catch (IllegalArgumentException ignored) {
                 // malformed UUID — skip silently
             }
@@ -264,12 +292,27 @@ public class SyncService {
             throw new ApiException(403, "consent_required", "cloud_storage");
         }
 
-        // --- Parse since ---
-        Instant since = parseSince(sinceStr);
-
-        // --- Watermark-too-old check (OQ-SYNC-13) ---
-        if (since != null && since.isBefore(Instant.now().minus(TOMBSTONE_TTL_DAYS, ChronoUnit.DAYS))) {
-            throw new ApiException(409, "watermark_expired");
+        // --- Decode cursor or start a new drain ---
+        // Cursor is decoded FIRST so that cursor.since is used for effectiveSince (§9 pin:
+        // since is locked to the drain's original value and must not be overridden by the
+        // query param on subsequent batches — OQ-SYNC-12 / sinceInstant() was previously dead).
+        SyncCursor cursor = null;
+        Instant since;
+        Instant w1;
+        if (cursorStr != null) {
+            cursor = SyncCursor.decode(cursorStr, objectMapper); // throws 400 if invalid
+            w1 = cursor.w1Instant();
+            since = cursor.sinceInstant(); // FIX §9: pin since from cursor, not query param
+        } else {
+            // Fresh drain: parse since from param and validate watermark age.
+            since = parseSince(sinceStr);
+            // --- Watermark-too-old check (OQ-SYNC-13, first-batch only; cursor was already checked) ---
+            if (since != null && since.isBefore(Instant.now().minus(TOMBSTONE_TTL_DAYS, ChronoUnit.DAYS))) {
+                throw new ApiException(409, "watermark_expired");
+            }
+            // Snapshot-start W1: stamped ONCE at the first cursor-less request (OQ-SYNC-12 / §9).
+            // Truncated to milliseconds so it round-trips through cursor epoch-millis unchanged.
+            w1 = Instant.now().truncatedTo(ChronoUnit.MILLIS);
         }
 
         // --- Safe-window (clamped to [0, 60]) ---
@@ -282,28 +325,17 @@ public class SyncService {
         // --- Page limit ---
         int pageLimit = (limit != null) ? Math.min(Math.max(limit, 1), MAX_PULL_LIMIT) : DEFAULT_PULL_LIMIT;
 
-        // --- Decode cursor or start a new drain ---
-        SyncCursor cursor = null;
-        Instant w1;
-        if (cursorStr != null) {
-            cursor = SyncCursor.decode(cursorStr, objectMapper); // throws 400 if invalid
-            w1 = cursor.w1Instant();
-        } else {
-            // Snapshot-start W1: stamped ONCE at the first cursor-less request (OQ-SYNC-12 / §9).
-            // Truncated to milliseconds so it round-trips through cursor epoch-millis unchanged.
-            w1 = Instant.now().truncatedTo(ChronoUnit.MILLIS);
-        }
-
         // --- Drain collections in fixed order ---
         Map<String, CollectionPullChanges> changes = new LinkedHashMap<>();
         String nextCursor = null;
         int remaining = pageLimit;
-        boolean drainComplete = true;
 
         // Determine where to resume (if cursor present)
         String resumeAtCollection = (cursor != null) ? cursor.coll : null;
 
-        for (SyncCollection coll : registry.inPullOrder()) {
+        List<SyncCollection> pullOrder = registry.inPullOrder();
+        for (int ci = 0; ci < pullOrder.size(); ci++) {
+            SyncCollection coll = pullOrder.get(ci);
             String collName = coll.name();
 
             // Skip collections that are before the cursor's current collection
@@ -329,7 +361,6 @@ public class SyncService {
             boolean collectionHasMore = rows.size() > remaining;
             if (collectionHasMore) {
                 rows = rows.subList(0, remaining);
-                drainComplete = false;
             }
 
             // Split into updated[] (live) and deleted[] (tombstones)
@@ -346,19 +377,28 @@ public class SyncService {
             remaining -= rows.size();
 
             if (collectionHasMore) {
-                // Build next cursor: W1 (unchanged snapshot start) + current position
+                // Build next cursor: W1 (unchanged snapshot start) + current keyset position.
+                // SyncCursor.create is used regardless of whether this is the first or a
+                // continuation batch — the key invariant is that w1 is carried unchanged (already
+                // derived from cursor.w1 above), and issued=now gives this cursor a fresh 1h TTL.
                 PullRecord last = rows.get(rows.size() - 1);
-                SyncCursor nextCursorObj = (cursorStr == null)
-                        ? SyncCursor.create(w1, since, collName, last.updatedAt(), last.id())
-                        : SyncCursor.advance(
-                            buildPrevCursorForAdvance(w1, since),
-                            collName, last.updatedAt(), last.id());
+                SyncCursor nextCursorObj = SyncCursor.create(w1, since, collName, last.updatedAt(), last.id());
                 nextCursor = nextCursorObj.encode(objectMapper);
                 break;
             }
 
             if (remaining <= 0) {
-                drainComplete = false;
+                // Page budget exhausted exactly at the end of this collection.
+                // If more collections follow in PULL_ORDER, emit a cursor pointing to the
+                // start of the next collection so the client can continue the drain (§9 / §B.4).
+                // NOTE: With only supplyItems in PULL_ORDER today this branch is unreachable;
+                // the fix is pre-coded so adding reminders (next entity) cannot silently
+                // break cursor pagination at collection boundaries.
+                if (ci + 1 < pullOrder.size()) {
+                    SyncCollection nextColl = pullOrder.get(ci + 1);
+                    SyncCursor nextCursorObj = SyncCursor.forCollectionStart(w1, since, nextColl.name());
+                    nextCursor = nextCursorObj.encode(objectMapper);
+                }
                 break;
             }
         }
@@ -436,11 +476,4 @@ public class SyncService {
         }
     }
 
-    private SyncCursor buildPrevCursorForAdvance(Instant w1, Instant since) {
-        SyncCursor prev = new SyncCursor();
-        prev.w1 = w1.toEpochMilli();
-        prev.issued = Instant.now().toEpochMilli();
-        prev.since = since != null ? since.toEpochMilli() : 0L;
-        return prev;
-    }
 }
