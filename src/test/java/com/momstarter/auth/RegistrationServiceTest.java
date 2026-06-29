@@ -38,7 +38,7 @@ class RegistrationServiceTest {
 
     private final RegistrationService service = new RegistrationService(
             users, encoder, passwordPolicy, emailVerification, sender, jwt, refreshTokens,
-            rateLimiter, 1_000_000, 1_000_000, false);
+            rateLimiter, 1_000_000, 1_000_000, 1_000_000, false);
 
     @Test
     void collidingEmail_stillRunsBcrypt_andCreatesNoUser() {
@@ -78,5 +78,17 @@ class RegistrationServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting("code").isEqualTo("rate_limited");
         verify(users, never()).save(any());
+    }
+
+    @Test
+    void verifyEmail_isThrottledPerIp() {
+        // Contract §H: POST /auth/verify-email must be rate-limited per IP to prevent token guessing
+        doThrow(new ApiException(429, "rate_limited"))
+                .when(rateLimiter).check(startsWith("verify-email-ip:"), anyInt(), any());
+
+        assertThatThrownBy(() -> service.verifyEmail(
+                new com.momstarter.auth.dto.VerifyEmailRequest("sometoken", "d1"), "9.9.9.9"))
+                .isInstanceOf(ApiException.class)
+                .extracting("code").isEqualTo("rate_limited");
     }
 }

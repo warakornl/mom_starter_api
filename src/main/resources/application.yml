@@ -26,6 +26,9 @@ momstarter:
     resend-per-ip-per-min: 10
     forgot-per-ip-per-min: 10
     reset-per-ip-per-min: 10
+    # Contract §H: verify-email rate-limited per IP to guard against token guessing
+    # (128-bit token is already strong; rate-limit adds defence-in-depth at parity with reset)
+    verify-email-per-ip-per-min: 10
   dev:
     # NEVER set to true outside application-local.yml.  The DevModeGuard enforces this
     # at startup and will refuse to boot if it detects a prod profile or a remote DB.

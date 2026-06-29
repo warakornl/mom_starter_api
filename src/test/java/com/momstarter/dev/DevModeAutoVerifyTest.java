@@ -100,6 +100,6 @@ class DevModeAutoVerifyTest {
     private RegistrationService serviceWith(boolean autoVerifyEmail) {
         return new RegistrationService(
                 users, encoder, passwordPolicy, emailVerification, sender, jwt, refreshTokens,
-                rateLimiter, 1_000_000, 1_000_000, autoVerifyEmail);
+                rateLimiter, 1_000_000, 1_000_000, 1_000_000, autoVerifyEmail);
     }
 }

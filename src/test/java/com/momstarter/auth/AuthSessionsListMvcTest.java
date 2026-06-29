@@ -58,9 +58,11 @@ class AuthSessionsListMvcTest {
 
     @Test
     void listsOneSessionPerActiveDevice() throws Exception {
+        // Contract N4/N5: list endpoints return Page<T> = { items: [...], nextCursor? }  — NOT a bare array
         mvc.perform(get("/auth/sessions").header("Authorization", "Bearer " + bearer))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[*].deviceId", containsInAnyOrder("device-1", "device-2")));
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[*].deviceId", containsInAnyOrder("device-1", "device-2")));
     }
 }

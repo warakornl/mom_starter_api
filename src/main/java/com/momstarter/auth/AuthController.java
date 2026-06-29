@@ -2,6 +2,7 @@ package com.momstarter.auth;
 
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.DeviceSession;
+import com.momstarter.auth.dto.PageResponse;
 import com.momstarter.auth.dto.ChangePasswordRequest;
 import com.momstarter.auth.dto.ForgotPasswordRequest;
 import com.momstarter.auth.dto.GoogleSignInRequest;
@@ -25,7 +26,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -83,8 +83,10 @@ public class AuthController {
     }
 
     @PostMapping("/verify-email")
-    public ResponseEntity<AuthTokens> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
-        return ResponseEntity.ok(registrationService.verifyEmail(request));
+    public ResponseEntity<AuthTokens> verifyEmail(@Valid @RequestBody VerifyEmailRequest request,
+                                                  HttpServletRequest httpRequest) {
+        // Rate-limited per IP (contract §H: guards against verify-token guessing)
+        return ResponseEntity.ok(registrationService.verifyEmail(request, httpRequest.getRemoteAddr()));
     }
 
     @PostMapping("/resend-verification")
@@ -113,8 +115,9 @@ public class AuthController {
     }
 
     @GetMapping("/sessions")
-    public ResponseEntity<List<DeviceSession>> sessions(@AuthenticationPrincipal Jwt jwt) {
-        return ResponseEntity.ok(authService.listSessions(UUID.fromString(jwt.getSubject())));
+    public ResponseEntity<PageResponse<DeviceSession>> sessions(@AuthenticationPrincipal Jwt jwt) {
+        // Contract N4/N5: list endpoints return Page<T> = { items: [...], nextCursor? }
+        return ResponseEntity.ok(PageResponse.of(authService.listSessions(UUID.fromString(jwt.getSubject()))));
     }
 
     @DeleteMapping("/sessions/{deviceId}")

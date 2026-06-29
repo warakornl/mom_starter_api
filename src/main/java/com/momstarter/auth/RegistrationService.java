@@ -38,6 +38,7 @@ public class RegistrationService {
     private final RateLimiter rateLimiter;
     private final int registerMaxPerIpPerMin;
     private final int resendMaxPerIpPerMin;
+    private final int verifyEmailMaxPerIpPerMin;
     /** DEV ONLY — set via momstarter.dev.auto-verify-email (default false, true only in local profile). */
     private final boolean autoVerifyEmail;
 
@@ -51,6 +52,7 @@ public class RegistrationService {
                                RateLimiter rateLimiter,
                                @Value("${momstarter.ratelimit.register-per-ip-per-min:15}") int registerMaxPerIpPerMin,
                                @Value("${momstarter.ratelimit.resend-per-ip-per-min:10}") int resendMaxPerIpPerMin,
+                               @Value("${momstarter.ratelimit.verify-email-per-ip-per-min:10}") int verifyEmailMaxPerIpPerMin,
                                @Value("${momstarter.dev.auto-verify-email:false}") boolean autoVerifyEmail) {
         this.users = users;
         this.encoder = encoder;
@@ -62,6 +64,7 @@ public class RegistrationService {
         this.rateLimiter = rateLimiter;
         this.registerMaxPerIpPerMin = registerMaxPerIpPerMin;
         this.resendMaxPerIpPerMin = resendMaxPerIpPerMin;
+        this.verifyEmailMaxPerIpPerMin = verifyEmailMaxPerIpPerMin;
         this.autoVerifyEmail = autoVerifyEmail;
     }
 
@@ -116,8 +119,12 @@ public class RegistrationService {
         });
     }
 
-    /** Consume the emailed token, mark the account verified, and mint its FIRST session (§G). */
-    public AuthTokens verifyEmail(VerifyEmailRequest req) {
+    /** Consume the emailed token, mark the account verified, and mint its FIRST session (§G).
+     *
+     * <p>Rate-limited per IP (contract §H): guards against token guessing (128-bit token is
+     * already strong, but rate-limit adds defence-in-depth at parity with reset-password). */
+    public AuthTokens verifyEmail(VerifyEmailRequest req, String clientIp) {
+        rateLimiter.check("verify-email-ip:" + clientIp, verifyEmailMaxPerIpPerMin, Duration.ofMinutes(1));
         UUID userId = emailVerification.consume(req.token());
         User user = users.findById(userId)
                 .orElseThrow(() -> new ApiException(410, "verify_token_invalid"));
