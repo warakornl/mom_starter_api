@@ -65,6 +65,17 @@ public class RegistrationService {
         // no session is minted; the caller returns an identical 202 either way
     }
 
+    /** Re-send the verification email. Always a no-op-or-send that the caller answers with 202 —
+     *  never reveals whether the email exists or is already verified (§E/§H). */
+    public void resendVerification(String email) {
+        String normalised = normaliseEmail(email);
+        users.findByEmail(normalised).ifPresent(user -> {
+            if (!user.isEmailVerified()) {
+                emailSender.sendVerification(normalised, emailVerification.issue(user));
+            }
+        });
+    }
+
     /** Consume the emailed token, mark the account verified, and mint its FIRST session (§G). */
     public AuthTokens verifyEmail(VerifyEmailRequest req) {
         UUID userId = emailVerification.consume(req.token());

@@ -6,6 +6,7 @@ import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
 import com.momstarter.auth.dto.RegisterRequest;
+import com.momstarter.auth.dto.ResendVerificationRequest;
 import com.momstarter.auth.dto.VerifyEmailRequest;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -45,6 +46,12 @@ public class AuthController {
     @PostMapping("/verify-email")
     public ResponseEntity<AuthTokens> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
         return ResponseEntity.ok(registrationService.verifyEmail(request));
+    }
+
+    @PostMapping("/resend-verification")
+    public ResponseEntity<Map<String, String>> resendVerification(@Valid @RequestBody ResendVerificationRequest request) {
+        registrationService.resendVerification(request.email());
+        return ResponseEntity.accepted().body(Map.of("code", "verification_pending"));
     }
 
     @PostMapping("/login")
