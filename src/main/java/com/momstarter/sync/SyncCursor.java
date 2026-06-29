@@ -9,6 +9,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.UUID;
 
+
 /**
  * Opaque cursor for cold-start / paginated {@code GET /sync/pull} drains
  * (api-contract §9 / OQ-SYNC-12).
@@ -22,7 +23,8 @@ import java.util.UUID;
  *   <li>{@code issued} — epoch ms when this cursor was issued; used for the 1h TTL check.</li>
  *   <li>{@code since} — original {@code since} param (epoch ms), held FIXED across the drain.</li>
  *   <li>{@code coll} — the collection currently being scanned (fixed order per registry).</li>
- *   <li>{@code atMs} — last row's {@code updated_at} (epoch ms); drives keyset continuation.</li>
+ *   <li>{@code atUs} — last row's {@code updated_at} (epoch µs); drives keyset continuation.
+ *       Stored as microseconds (not ms) to avoid sub-millisecond overshoot in keyset queries.</li>
  *   <li>{@code id} — last row's {@code id}; keyset secondary sort key.</li>
  * </ul>
  *
@@ -38,7 +40,14 @@ public class SyncCursor {
     public long issued;  // issue time (epoch ms) — for TTL
     public long since;   // original since (epoch ms); 0 = cold start
     public String coll;  // current collection name
-    public long atMs;    // cursorUpdatedAt (epoch ms)
+    /**
+     * cursorUpdatedAt as epoch <strong>microseconds</strong> (not milliseconds).
+     * Storing microseconds preserves the sub-millisecond precision that the DB
+     * (H2 and PostgreSQL) uses, preventing keyset-overshoot: if stored as epoch-ms,
+     * a row whose updatedAt is e.g. 355006µs would satisfy {@code updated_at > 355ms},
+     * causing it to be re-delivered in the next batch despite being the cursor row itself.
+     */
+    public long atUs;    // cursorUpdatedAt (epoch µs — microseconds)
     public String id;    // cursorId (UUID string)
 
     // -------------------------------------------------------------------------
@@ -47,6 +56,8 @@ public class SyncCursor {
 
     /**
      * Creates a new cursor for the FIRST batch of a drain.
+     *
+     * <p>TODO: HMAC-sign cursor before prod (impact self-only, all queries JWT-scoped). §🟡-6
      *
      * @param w1     snapshot-start instant (stamped once at the first cursor-less request)
      * @param since  the original {@code since} parameter (0/EPOCH = cold start)
@@ -62,7 +73,7 @@ public class SyncCursor {
         c.issued = now;
         c.since = since != null ? since.toEpochMilli() : 0L;
         c.coll = coll;
-        c.atMs = lastAt.toEpochMilli();
+        c.atUs = ChronoUnit.MICROS.between(Instant.EPOCH, lastAt); // µs precision — no overshoot
         c.id = lastId.toString();
         return c;
     }
@@ -77,8 +88,30 @@ public class SyncCursor {
         c.issued = prev.issued;
         c.since = prev.since;
         c.coll = newColl;
-        c.atMs = lastAt.toEpochMilli();
+        c.atUs = ChronoUnit.MICROS.between(Instant.EPOCH, lastAt);
         c.id = lastId.toString();
+        return c;
+    }
+
+    /**
+     * Creates a cursor pointing to the <em>start</em> of {@code coll} (no keyset position).
+     * Used when the page budget is exhausted exactly at a collection boundary and there is a
+     * next collection in PULL_ORDER (§5 fix — page boundary = collection boundary).
+     *
+     * <p>{@code atUs=0} and {@code id=null} signal "start of collection" to the pull loop;
+     * {@link #cursorUpdatedAt()} returns {@code null} for atUs=0, which makes the query use
+     * the full {@code since} range (no keyset predicate applied).
+     *
+     * <p>TODO: HMAC-sign cursor before prod (impact self-only, all queries JWT-scoped). §🟡-6
+     */
+    public static SyncCursor forCollectionStart(Instant w1, Instant since, String coll) {
+        SyncCursor c = new SyncCursor();
+        c.w1 = w1.toEpochMilli();
+        c.issued = Instant.now().toEpochMilli();
+        c.since = since != null ? since.toEpochMilli() : 0L;
+        c.coll = coll;
+        c.atUs = 0; // start-of-collection: cursorUpdatedAt() returns null for atUs=0
+        c.id = null;
         return c;
     }
 
@@ -128,7 +161,11 @@ public class SyncCursor {
 
     public Instant sinceInstant() { return since > 0 ? Instant.ofEpochMilli(since) : null; }
 
-    public Instant cursorUpdatedAt() { return atMs > 0 ? Instant.ofEpochMilli(atMs) : null; }
+    /** Returns the keyset-resume {@code updated_at} with microsecond precision, or {@code null}
+     *  for a start-of-collection cursor ({@code atUs == 0}). */
+    public Instant cursorUpdatedAt() {
+        return atUs > 0 ? Instant.EPOCH.plus(atUs, ChronoUnit.MICROS) : null;
+    }
 
     public UUID cursorId() {
         try { return id != null ? UUID.fromString(id) : null; } catch (Exception e) { return null; }
