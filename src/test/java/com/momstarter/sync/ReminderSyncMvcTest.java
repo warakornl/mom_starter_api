@@ -525,6 +525,51 @@ class ReminderSyncMvcTest {
                         .value("20:00"));
     }
 
+    // -------------------------------------------------------------------------
+    // Round-trip: every_n_days + until (ISSUE-6)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Pushes a reminder with {@code every_n_days} + {@code until} then pulls and asserts
+     * that all FLAG-4 grammar fields ({@code freq}, {@code interval}, {@code timesOfDay},
+     * {@code until}) survive the round-trip as a JSON object (not a string).
+     */
+    @Test
+    void push_then_pull_roundtrip_everyNDays_with_until() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "every_n_days");
+        rule.put("interval", 3);
+        rule.put("timesOfDay", List.of("09:00", "21:00"));
+        rule.put("until", "2026-12-31");
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Every 3 days with until",
+                "medication", rule, "2026-07-01T09:00");
+
+        // Push
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.rejected").isEmpty());
+
+        // Pull — all four grammar fields must be present as a JSON object
+        mvc.perform(get("/sync/pull")
+                        .header("Authorization", "Bearer " + bearer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.freq")
+                        .value("every_n_days"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.interval")
+                        .value(3))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.timesOfDay[0]")
+                        .value("09:00"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.timesOfDay[1]")
+                        .value("21:00"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.until")
+                        .value("2026-12-31"));
+    }
+
     // =========================================================================
     // Helpers
     // =========================================================================
