@@ -15,3 +15,7 @@ momstarter:
     login-per-ip-per-min: 50      # high enough to let the per-account lockout (10) demo run first
     register-per-ip-per-min: 5    # low so the register throttle is easy to demonstrate
     resend-per-ip-per-min: 5
+  dev:
+    # LOCAL ONLY — enables auto-verify-email shortcut + seeds dev@momstarter.local account.
+    # DevModeGuard will refuse startup if this is accidentally set in prod/remote-DB environments.
+    auto-verify-email: true

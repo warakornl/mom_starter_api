@@ -24,6 +24,10 @@ momstarter:
     login-per-ip-per-min: 20
     register-per-ip-per-min: 15
     resend-per-ip-per-min: 10
+  dev:
+    # NEVER set to true outside application-local.yml.  The DevModeGuard enforces this
+    # at startup and will refuse to boot if it detects a prod profile or a remote DB.
+    auto-verify-email: false
 
 # Google sign-in (§J). client-id empty by default -> Google sign-in disabled until configured.
 google:

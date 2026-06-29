@@ -38,7 +38,7 @@ class RegistrationServiceTest {
 
     private final RegistrationService service = new RegistrationService(
             users, encoder, passwordPolicy, emailVerification, sender, jwt, refreshTokens,
-            rateLimiter, 1_000_000, 1_000_000);
+            rateLimiter, 1_000_000, 1_000_000, false);
 
     @Test
     void collidingEmail_stillRunsBcrypt_andCreatesNoUser() {

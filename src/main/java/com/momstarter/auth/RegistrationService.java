@@ -6,6 +6,8 @@ import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.RegisterRequest;
 import com.momstarter.auth.dto.VerifyEmailRequest;
 import com.momstarter.error.ApiException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -24,6 +26,8 @@ import java.util.UUID;
 @Service
 public class RegistrationService {
 
+    private static final Logger log = LoggerFactory.getLogger(RegistrationService.class);
+
     private final UserRepository users;
     private final PasswordEncoder encoder;
     private final PasswordPolicy passwordPolicy;
@@ -34,6 +38,8 @@ public class RegistrationService {
     private final RateLimiter rateLimiter;
     private final int registerMaxPerIpPerMin;
     private final int resendMaxPerIpPerMin;
+    /** DEV ONLY — set via momstarter.dev.auto-verify-email (default false, true only in local profile). */
+    private final boolean autoVerifyEmail;
 
     public RegistrationService(UserRepository users,
                                PasswordEncoder encoder,
@@ -44,7 +50,8 @@ public class RegistrationService {
                                RefreshTokenService refreshTokens,
                                RateLimiter rateLimiter,
                                @Value("${momstarter.ratelimit.register-per-ip-per-min:15}") int registerMaxPerIpPerMin,
-                               @Value("${momstarter.ratelimit.resend-per-ip-per-min:10}") int resendMaxPerIpPerMin) {
+                               @Value("${momstarter.ratelimit.resend-per-ip-per-min:10}") int resendMaxPerIpPerMin,
+                               @Value("${momstarter.dev.auto-verify-email:false}") boolean autoVerifyEmail) {
         this.users = users;
         this.encoder = encoder;
         this.passwordPolicy = passwordPolicy;
@@ -55,6 +62,7 @@ public class RegistrationService {
         this.rateLimiter = rateLimiter;
         this.registerMaxPerIpPerMin = registerMaxPerIpPerMin;
         this.resendMaxPerIpPerMin = resendMaxPerIpPerMin;
+        this.autoVerifyEmail = autoVerifyEmail;
     }
 
     public void register(RegisterRequest req, String clientIp) {
@@ -75,9 +83,20 @@ public class RegistrationService {
             user.setEmail(email);
             user.setPasswordHash(passwordHash);
             user.setLocale(req.locale());
-            user.setEmailVerified(false);
-            users.save(user);
-            emailSender.sendVerification(email, emailVerification.issue(user));
+
+            if (autoVerifyEmail) {
+                // DEV MODE ONLY — skip the two-phase flow so testers can log in immediately.
+                // This branch is guarded by DevModeGuard; it will never reach here in production.
+                log.warn("DEV MODE: auto-verify-email is ON — setting emailVerified=true for {} without email verification",
+                        email);
+                user.setEmailVerified(true);
+                users.save(user);
+                // No verification token issued, no email sent.
+            } else {
+                user.setEmailVerified(false);
+                users.save(user);
+                emailSender.sendVerification(email, emailVerification.issue(user));
+            }
         } else {
             emailSender.sendAlreadyRegisteredNotice(email);
         }
