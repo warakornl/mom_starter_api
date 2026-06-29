@@ -8,6 +8,8 @@ import com.momstarter.reminder.ReminderRepository;
 import com.momstarter.sync.dto.Applied;
 import com.momstarter.sync.dto.Conflict;
 import com.momstarter.sync.dto.Rejected;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
@@ -52,6 +54,8 @@ import java.util.stream.Collectors;
  */
 @Component
 class ReminderSyncCollection implements SyncCollection {
+
+    private static final Logger log = LoggerFactory.getLogger(ReminderSyncCollection.class);
 
     private static final String COLLECTION = "reminders";
 
@@ -452,7 +456,12 @@ class ReminderSyncCollection implements SyncCollection {
                 }
                 m.put("recurrenceRule", node);
             }
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            // Should not happen: push-path grammar validation ensures only valid JSON reaches
+            // this field.  If it does (e.g. out-of-band DB write), emit the raw string so
+            // the client at least gets the data rather than a 500, but log loudly so we notice.
+            log.warn("toRecord: failed to parse recurrenceRule for reminder id={}; "
+                    + "falling back to raw string. cause={}", r.getId(), ex.getMessage());
             m.put("recurrenceRule", r.getRecurrenceRule()); // last-resort raw string fallback
         }
         m.put("startAt", r.getStartAt() != null ? r.getStartAt().format(CIVIL_MINUTE_FMT) : null);
