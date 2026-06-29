@@ -52,6 +52,12 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Argon2id password hashing (no 72-byte truncation; supports long Thai passphrases) -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.78.1</version>
+        </dependency>
 
         <dependency>
             <groupId>com.h2database</groupId>
