@@ -2,11 +2,15 @@ package com.momstarter.auth;
 
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
+import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.RegisterRequest;
+import com.momstarter.auth.dto.VerifyEmailRequest;
+import com.momstarter.error.ApiException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Two-phase, strictly non-enumerating registration (§E/§G). Register mints NO session and its
@@ -23,17 +27,23 @@ public class RegistrationService {
     private final PasswordPolicy passwordPolicy;
     private final EmailVerificationService emailVerification;
     private final VerificationEmailSender emailSender;
+    private final JwtService jwt;
+    private final RefreshTokenService refreshTokens;
 
     public RegistrationService(UserRepository users,
                                PasswordEncoder encoder,
                                PasswordPolicy passwordPolicy,
                                EmailVerificationService emailVerification,
-                               VerificationEmailSender emailSender) {
+                               VerificationEmailSender emailSender,
+                               JwtService jwt,
+                               RefreshTokenService refreshTokens) {
         this.users = users;
         this.encoder = encoder;
         this.passwordPolicy = passwordPolicy;
         this.emailVerification = emailVerification;
         this.emailSender = emailSender;
+        this.jwt = jwt;
+        this.refreshTokens = refreshTokens;
     }
 
     public void register(RegisterRequest req) {
@@ -53,6 +63,20 @@ public class RegistrationService {
             emailSender.sendAlreadyRegisteredNotice(email);
         }
         // no session is minted; the caller returns an identical 202 either way
+    }
+
+    /** Consume the emailed token, mark the account verified, and mint its FIRST session (§G). */
+    public AuthTokens verifyEmail(VerifyEmailRequest req) {
+        UUID userId = emailVerification.consume(req.token());
+        User user = users.findById(userId)
+                .orElseThrow(() -> new ApiException(410, "verify_token_invalid"));
+        user.setEmailVerified(true);
+        users.save(user);
+
+        RefreshTokenService.Issued issued = refreshTokens.mintFamily(user.getId(), req.deviceId(), null);
+        String accessToken = jwt.issueAccessToken(user.getId(), true);
+        return new AuthTokens(accessToken, issued.rawToken(),
+                jwt.accessTtlSeconds(), RefreshTokenService.REFRESH_TTL.toSeconds());
     }
 
     static String normaliseEmail(String email) {

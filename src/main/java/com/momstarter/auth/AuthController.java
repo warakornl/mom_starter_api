@@ -6,6 +6,7 @@ import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
 import com.momstarter.auth.dto.RegisterRequest;
+import com.momstarter.auth.dto.VerifyEmailRequest;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -39,6 +40,11 @@ public class AuthController {
     public ResponseEntity<Map<String, String>> register(@Valid @RequestBody RegisterRequest request) {
         registrationService.register(request);
         return ResponseEntity.accepted().body(Map.of("code", "verification_pending"));
+    }
+
+    @PostMapping("/verify-email")
+    public ResponseEntity<AuthTokens> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
+        return ResponseEntity.ok(registrationService.verifyEmail(request));
     }
 
     @PostMapping("/login")

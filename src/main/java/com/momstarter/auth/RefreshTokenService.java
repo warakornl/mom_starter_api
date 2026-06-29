@@ -46,6 +46,8 @@ public class RefreshTokenService {
     public record Issued(String rawToken, Instant expiresAt, UUID userId) {
     }
 
+    static final String UNKNOWN_DEVICE = "unknown";
+
     /** Start a brand-new family (a session-minting event: login / verify-email). */
     public Issued mintFamily(UUID userId, String deviceId, String deviceName) {
         String raw = generateRawToken();
@@ -53,7 +55,7 @@ public class RefreshTokenService {
         rt.setUserId(userId);
         rt.setTokenHash(sha256Hex(raw));
         rt.setFamilyId(UUID.randomUUID());
-        rt.setDeviceId(deviceId);
+        rt.setDeviceId(normaliseDeviceId(deviceId));
         rt.setDeviceName(deviceName);
         rt.setExpiresAt(now().plus(REFRESH_TTL));
         tokens.save(rt);
@@ -85,7 +87,7 @@ public class RefreshTokenService {
         next.setUserId(presented.getUserId());
         next.setTokenHash(sha256Hex(raw));
         next.setFamilyId(presented.getFamilyId());
-        next.setDeviceId(deviceId != null ? deviceId : presented.getDeviceId());
+        next.setDeviceId(deviceId != null && !deviceId.isBlank() ? deviceId : presented.getDeviceId());
         next.setDeviceName(presented.getDeviceName());
         next.setPreviousId(presented.getId());
         next.setExpiresAt(now().plus(REFRESH_TTL));
@@ -155,6 +157,10 @@ public class RefreshTokenService {
 
     private Instant now() {
         return clock.instant();
+    }
+
+    private static String normaliseDeviceId(String deviceId) {
+        return (deviceId == null || deviceId.isBlank()) ? UNKNOWN_DEVICE : deviceId;
     }
 
     private static String generateRawToken() {
