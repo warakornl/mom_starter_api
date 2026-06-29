@@ -2,11 +2,14 @@ package com.momstarter.auth;
 
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.DeviceSession;
+import com.momstarter.auth.dto.ChangePasswordRequest;
+import com.momstarter.auth.dto.ForgotPasswordRequest;
 import com.momstarter.auth.dto.GoogleSignInRequest;
 import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
 import com.momstarter.auth.dto.RegisterRequest;
+import com.momstarter.auth.dto.ResetPasswordRequest;
 import com.momstarter.auth.dto.ResendVerificationRequest;
 import com.momstarter.auth.dto.VerifyEmailRequest;
 import jakarta.servlet.http.HttpServletRequest;
@@ -33,18 +36,43 @@ public class AuthController {
     private final AuthService authService;
     private final RegistrationService registrationService;
     private final GoogleSignInService googleSignInService;
+    private final PasswordRecoveryService passwordRecoveryService;
 
     public AuthController(AuthService authService,
                           RegistrationService registrationService,
-                          GoogleSignInService googleSignInService) {
+                          GoogleSignInService googleSignInService,
+                          PasswordRecoveryService passwordRecoveryService) {
         this.authService = authService;
         this.registrationService = registrationService;
         this.googleSignInService = googleSignInService;
+        this.passwordRecoveryService = passwordRecoveryService;
     }
 
     @PostMapping("/google")
     public ResponseEntity<AuthTokens> google(@Valid @RequestBody GoogleSignInRequest request) {
         return ResponseEntity.ok(googleSignInService.signIn(request.idToken(), request.nonce(), request.deviceId()));
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<Map<String, String>> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request,
+                                                             HttpServletRequest httpRequest) {
+        passwordRecoveryService.forgotPassword(request.email(), httpRequest.getRemoteAddr());
+        return ResponseEntity.accepted().body(Map.of("code", "reset_requested"));
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<Void> resetPassword(@Valid @RequestBody ResetPasswordRequest request,
+                                              HttpServletRequest httpRequest) {
+        passwordRecoveryService.resetPassword(request.token(), request.newPassword(), httpRequest.getRemoteAddr());
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/change-password")
+    public ResponseEntity<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request,
+                                               @AuthenticationPrincipal Jwt jwt) {
+        passwordRecoveryService.changePassword(UUID.fromString(jwt.getSubject()),
+                request.currentPassword(), request.newPassword(), request.deviceId());
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/register")

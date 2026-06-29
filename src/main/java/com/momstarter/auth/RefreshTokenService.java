@@ -131,6 +131,18 @@ public class RefreshTokenService {
         }
     }
 
+    /** Revoke every family EXCEPT those bound to {@code keepDeviceId} (change-password keeps the
+     *  device the user is currently on). */
+    public void revokeAllForUserExceptDevice(UUID userId, String keepDeviceId) {
+        Instant t = now();
+        for (RefreshToken rt : tokens.findByUserId(userId)) {
+            if (rt.getRevokedAt() == null && !keepDeviceId.equals(rt.getDeviceId())) {
+                rt.setRevokedAt(t);
+                tokens.save(rt);
+            }
+        }
+    }
+
     /** Revoke the family that owns the presented raw token (logout of one session). */
     public void revokeByRawToken(String rawToken) {
         tokens.findByTokenHash(sha256Hex(rawToken))
