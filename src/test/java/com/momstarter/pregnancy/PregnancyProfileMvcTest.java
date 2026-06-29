@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
@@ -16,9 +17,13 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -53,6 +58,10 @@ class PregnancyProfileMvcTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    /** Replaces AlwaysGrantedConsentChecker so individual tests can override consent behaviour. */
+    @MockBean
+    private ConsentChecker consentChecker;
+
     private User user;
     private String bearer;
 
@@ -69,6 +78,9 @@ class PregnancyProfileMvcTest {
         user.setEmailVerified(true);
         user = users.save(user);
         bearer = jwtService.issueAccessToken(user.getId(), true);
+        // Default: consent always granted so existing PUT tests are unaffected.
+        // Individual tests override this stub when they need to test the denial path.
+        when(consentChecker.isGranted(any(), any())).thenReturn(true);
     }
 
     // =========================================================================
@@ -407,13 +419,130 @@ class PregnancyProfileMvcTest {
 
     @Test
     void put_currentWeekAtMaxBoundary_returns201() throws Exception {
-        // currentWeek=44 → edd = today - 28 → exactly at window min (valid)
+        // api-contract: currentWeek range is 1–42 (inclusive).
+        // currentWeek=42 → edd = today + (280 - 294) = today - 14 → within EDD window (valid → 201)
         mvc.perform(put("/pregnancy-profile")
                         .header("Authorization", "Bearer " + bearer)
                         .header("X-Client-Date", CLIENT_DATE)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"currentWeek\":44}"))
+                        .content("{\"currentWeek\":42}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.eddBasis").value("current_week"));
+    }
+
+    @Test
+    void put_currentWeek43_returns422() throws Exception {
+        // currentWeek=43 is out of the valid range (1–42) → 422 validation_error (fix #2)
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currentWeek\":43}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("validation_error"));
+    }
+
+    // =========================================================================
+    // Fix #1 — Resurrect tombstone
+    // =========================================================================
+
+    @Test
+    void put_resurrectTombstone_returns201() throws Exception {
+        // Step 1: create a live profile
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isCreated());
+
+        // Step 2: soft-delete it directly via repo (simulating a GDPR/delete operation)
+        PregnancyProfile tombstone = profiles.findByUserId(user.getId()).orElseThrow();
+        tombstone.setDeletedAt(Instant.now());
+        profiles.saveAndFlush(tombstone);
+
+        // Step 3: PUT again — must resurrect (201), not throw 500 unique-constraint violation
+        // EDD 2027-04-15 = today + 290 days, within the 308-day max window
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-04-15\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.edd").value("2027-04-15"));
+    }
+
+    // =========================================================================
+    // Fix #3 — 403 consent_required must carry details: "general_health"
+    // =========================================================================
+
+    @Test
+    void put_consentDenied_returns403WithDetails() throws Exception {
+        // Override default stub: consent is denied for general_health
+        when(consentChecker.isGranted(any(), eq("general_health"))).thenReturn(false);
+
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("consent_required"))
+                .andExpect(jsonPath("$.details").value("general_health"));
+    }
+
+    // =========================================================================
+    // Fix #4 — If-Match present but malformed → 412 (not 428)
+    // =========================================================================
+
+    @Test
+    void put_ifMatchMalformed_returns412() throws Exception {
+        // Create a live profile first so the update path is reached
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isCreated());
+
+        // Send a malformed If-Match value ("abc" cannot be parsed as a version number).
+        // EDD 2027-04-15 = today + 290 days, within the 308-day max window
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"abc\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-04-15\"}"))
+                .andExpect(status().is(412))
+                .andExpect(jsonPath("$.code").value("precondition_failed"));
+    }
+
+    // =========================================================================
+    // Security — cross-user isolation (no IDOR on GET)
+    // =========================================================================
+
+    @Test
+    void get_crossUserIsolation_returns404() throws Exception {
+        // Create user A's profile
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isCreated());
+
+        // Create user B — a completely different account
+        User userB = new User();
+        userB.setEmail("user-b@example.com");
+        userB.setEmailVerified(true);
+        userB = users.save(userB);
+        String bearerB = jwtService.issueAccessToken(userB.getId(), true);
+
+        // User B must NOT be able to read user A's profile → 404
+        mvc.perform(get("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearerB)
+                        .header("X-Client-Date", CLIENT_DATE))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("not_found"));
     }
 }

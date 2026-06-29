@@ -111,8 +111,10 @@ public class PregnancyProfileService {
 
         // 2 — Consent gate (general_health). Currently always-granted via seam.
         //     TODO: the real ConsentRecord check is wired here; only the stub changes.
+        //     api-contract: 403 must include details naming the consent type so the client
+        //     can surface the correct consent prompt (api-contract §consent-gating, ruling 1).
         if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
-            throw new ApiException(403, "consent_required");
+            throw new ApiException(403, "consent_required", GENERAL_HEALTH);
         }
 
         // 3 — Resolve EDD and eddBasis
@@ -123,6 +125,12 @@ public class PregnancyProfileService {
             eddBasis = "due_date";
         } else {
             int week = input.currentWeek();
+            // api-contract: currentWeek must be 1–42 inclusive (term = 42 completed weeks).
+            // Values outside this range are anatomically implausible and cannot be converted
+            // to a meaningful EDD, so reject with 422 before the EDD-window check.
+            if (week < 1 || week > 42) {
+                throw new ApiException(422, "validation_error");
+            }
             edd      = clientDate.plusDays(280L - (long) week * 7);
             eddBasis = "current_week";
         }
@@ -134,11 +142,14 @@ public class PregnancyProfileService {
             throw new ApiException(422, "validation_error");
         }
 
-        // 5 — Look up existing live profile
-        Optional<PregnancyProfile> existing = repository.findByUserIdAndDeletedAtIsNull(userId);
+        // 5 — Look up any existing row, including a soft-deleted tombstone.
+        //     Using findByUserId (not findByUserIdAndDeletedAtIsNull) so we can detect and
+        //     resurrect a tombstone rather than blindly inserting and hitting the UNIQUE(user_id)
+        //     constraint (which would produce a 500 DataIntegrityViolationException).
+        Optional<PregnancyProfile> anyExisting = repository.findByUserId(userId);
 
-        if (existing.isEmpty()) {
-            // 5a — Create: no If-Match required (OQ-5)
+        if (anyExisting.isEmpty()) {
+            // 5a — No row at all: insert new profile (OQ-5)
             PregnancyProfile profile = new PregnancyProfile();
             profile.setUserId(userId);
             profile.setEdd(edd);
@@ -151,8 +162,21 @@ public class PregnancyProfileService {
             return new PutResult.Created(PregnancyProfileResponse.of(saved, ga));
         }
 
-        // 5b — Update: If-Match is MANDATORY (OQ-5)
-        PregnancyProfile profile = existing.get();
+        PregnancyProfile profile = anyExisting.get();
+
+        if (profile.getDeletedAt() != null) {
+            // 5b — Tombstone: resurrect the row instead of inserting a duplicate.
+            //      Reset soft-delete marker, refresh EDD, and treat the result as a creation
+            //      (HTTP 201) because from the caller's perspective the profile is new.
+            profile.setDeletedAt(null);
+            profile.setEdd(edd);
+            profile.setEddBasis(eddBasis);
+            PregnancyProfile saved = repository.saveAndFlush(profile);
+            GestationalAge ga = GestationalAge.compute(saved.getEdd(), clientDate, saved.getLifecycle());
+            return new PutResult.Created(PregnancyProfileResponse.of(saved, ga));
+        }
+
+        // 5c — Update: If-Match is MANDATORY (OQ-5)
         if (ifMatch == null || ifMatch.isBlank()) {
             throw new ApiException(428, "precondition_required");
         }
@@ -191,12 +215,22 @@ public class PregnancyProfileService {
     /**
      * Parses the raw {@code If-Match} header value. HTTP ETag convention wraps the value in
      * double quotes (e.g. {@code "0"}), so we strip them before parsing.
+     *
+     * <p>Error semantics (api-contract §412/428):
+     * <ul>
+     *   <li>Header <strong>absent</strong> (null/blank) → caller throws {@code 428 precondition_required}
+     *       before reaching this method.</li>
+     *   <li>Header <strong>present but unparseable</strong> (e.g. {@code "abc"}, {@code *})
+     *       → {@code 412 precondition_failed}: the client sent a value but it is not a valid
+     *       version token. 428 would be semantically wrong ("precondition absent") for a
+     *       header that was actually provided.</li>
+     * </ul>
      */
     private static long parseIfMatch(String ifMatch) {
         try {
             return Long.parseLong(ifMatch.replace("\"", "").trim());
         } catch (NumberFormatException e) {
-            throw new ApiException(428, "precondition_required");
+            throw new ApiException(412, "precondition_failed");
         }
     }
 }

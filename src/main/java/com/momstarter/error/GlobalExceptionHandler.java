@@ -41,17 +41,25 @@ public class GlobalExceptionHandler {
             Map.entry("validation_error",      "One or more fields are invalid."),
             // Pregnancy-profile / optimistic-concurrency codes
             Map.entry("not_found",             "The requested resource was not found."),
-            Map.entry("precondition_required", "If-Match header is required for this operation.")
+            Map.entry("precondition_required", "If-Match header is required for this operation."),
+            Map.entry("precondition_failed",   "If-Match header value is invalid or unrecognised.")
     );
 
     private static String messageFor(String code) {
         return CODE_MESSAGES.getOrDefault(code, "An unexpected error occurred.");
     }
 
-    /** All domain errors (ApiException) → Problem body with generic, code-mapped message. */
+    /**
+     * All domain errors (ApiException) → Problem body with generic, code-mapped message.
+     *
+     * <p>When the exception carries a {@code details} string (e.g. consent gate errors
+     * include the consent-type name per api-contract) it is forwarded to the Problem body;
+     * otherwise {@code details} is {@code null} and excluded from the JSON by
+     * {@code @JsonInclude(NON_NULL)}.
+     */
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<Problem> handleApiException(ApiException ex) {
-        Problem body = new Problem(ex.getCode(), messageFor(ex.getCode()), null);
+        Problem body = new Problem(ex.getCode(), messageFor(ex.getCode()), ex.getDetails());
         return ResponseEntity.status(ex.getStatus()).body(body);
     }
 
