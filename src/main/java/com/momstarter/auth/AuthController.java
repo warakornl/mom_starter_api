@@ -2,6 +2,7 @@ package com.momstarter.auth;
 
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.DeviceSession;
+import com.momstarter.auth.dto.ChangePasswordRequest;
 import com.momstarter.auth.dto.ForgotPasswordRequest;
 import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
@@ -54,6 +55,14 @@ public class AuthController {
     public ResponseEntity<Void> resetPassword(@Valid @RequestBody ResetPasswordRequest request,
                                               HttpServletRequest httpRequest) {
         passwordRecoveryService.resetPassword(request.token(), request.newPassword(), httpRequest.getRemoteAddr());
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/change-password")
+    public ResponseEntity<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request,
+                                               @AuthenticationPrincipal Jwt jwt) {
+        passwordRecoveryService.changePassword(UUID.fromString(jwt.getSubject()),
+                request.currentPassword(), request.newPassword(), request.deviceId());
         return ResponseEntity.noContent().build();
     }
 
