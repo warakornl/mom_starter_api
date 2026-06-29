@@ -81,6 +81,11 @@ public class AuthService {
                 jwt.accessTtlSeconds(), RefreshTokenService.REFRESH_TTL.toSeconds());
     }
 
+    /** The user's active device sessions ("devices signed in"). */
+    public java.util.List<com.momstarter.auth.dto.DeviceSession> listSessions(UUID userId) {
+        return refreshTokens.listSessions(userId);
+    }
+
     /** Server-side logout: revoke the presented device family, or every family with allDevices. */
     public void logout(LogoutRequest req, UUID userId) {
         if (req != null && Boolean.TRUE.equals(req.allDevices())) {

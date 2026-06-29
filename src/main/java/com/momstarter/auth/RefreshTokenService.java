@@ -1,5 +1,6 @@
 package com.momstarter.auth;
 
+import com.momstarter.auth.dto.DeviceSession;
 import com.momstarter.error.ApiException;
 import org.springframework.stereotype.Service;
 
@@ -10,8 +11,12 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -119,6 +124,24 @@ public class RefreshTokenService {
     public void revokeByRawToken(String rawToken) {
         tokens.findByTokenHash(sha256Hex(rawToken))
                 .ifPresent(rt -> revokeFamily(rt.getFamilyId()));
+    }
+
+    /** The user's "devices signed in" — one row per family with a still-active (unrevoked, unexpired) leaf. */
+    public List<DeviceSession> listSessions(UUID userId) {
+        Instant now = now();
+        Map<UUID, RefreshToken> activeByFamily = new LinkedHashMap<>();
+        for (RefreshToken rt : tokens.findByUserId(userId)) {
+            if (rt.getRevokedAt() != null || rt.getExpiresAt().isBefore(now)) {
+                continue;
+            }
+            activeByFamily.put(rt.getFamilyId(), rt);
+        }
+        List<DeviceSession> sessions = new ArrayList<>();
+        for (RefreshToken rt : activeByFamily.values()) {
+            sessions.add(new DeviceSession(rt.getDeviceId(), rt.getDeviceName(),
+                    rt.getCreatedAt(), rt.getLastSeenAt(), false));
+        }
+        return sessions;
     }
 
     private Instant now() {

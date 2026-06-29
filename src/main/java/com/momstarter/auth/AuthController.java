@@ -1,6 +1,7 @@
 package com.momstarter.auth;
 
 import com.momstarter.auth.dto.AuthTokens;
+import com.momstarter.auth.dto.DeviceSession;
 import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
@@ -9,11 +10,13 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -42,5 +45,10 @@ public class AuthController {
                                        @AuthenticationPrincipal Jwt jwt) {
         authService.logout(request, UUID.fromString(jwt.getSubject()));
         return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/sessions")
+    public ResponseEntity<List<DeviceSession>> sessions(@AuthenticationPrincipal Jwt jwt) {
+        return ResponseEntity.ok(authService.listSessions(UUID.fromString(jwt.getSubject())));
     }
 }
