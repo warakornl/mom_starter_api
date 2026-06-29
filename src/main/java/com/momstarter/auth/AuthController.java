@@ -2,6 +2,7 @@ package com.momstarter.auth;
 
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.LoginRequest;
+import com.momstarter.auth.dto.RefreshRequest;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -24,5 +25,10 @@ public class AuthController {
     public ResponseEntity<AuthTokens> login(@Valid @RequestBody LoginRequest request,
                                             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(authService.login(request, httpRequest.getRemoteAddr()));
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<AuthTokens> refresh(@Valid @RequestBody RefreshRequest request) {
+        return ResponseEntity.ok(authService.refresh(request));
     }
 }

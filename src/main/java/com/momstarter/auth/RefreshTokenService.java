@@ -37,8 +37,8 @@ public class RefreshTokenService {
         this.clock = clock;
     }
 
-    /** Raw token plus its absolute expiry — returned to the client, never persisted as-is. */
-    public record Issued(String rawToken, Instant expiresAt) {
+    /** Raw token plus its absolute expiry and owning user — returned to the caller, never persisted as-is. */
+    public record Issued(String rawToken, Instant expiresAt, UUID userId) {
     }
 
     /** Start a brand-new family (a session-minting event: login / verify-email). */
@@ -52,7 +52,7 @@ public class RefreshTokenService {
         rt.setDeviceName(deviceName);
         rt.setExpiresAt(now().plus(REFRESH_TTL));
         tokens.save(rt);
-        return new Issued(raw, rt.getExpiresAt());
+        return new Issued(raw, rt.getExpiresAt(), userId);
     }
 
     /** Rotate the presented token, detecting reuse. */
@@ -90,7 +90,7 @@ public class RefreshTokenService {
         presented.setLastSeenAt(now());
         tokens.save(presented);
 
-        return new Issued(raw, next.getExpiresAt());
+        return new Issued(raw, next.getExpiresAt(), presented.getUserId());
     }
 
     /** Revoke every still-active token in a device family (theft response / single-device logout). */
