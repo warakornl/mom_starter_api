@@ -60,7 +60,8 @@ public class PasswordRecoveryService {
 
         String lockKey = "changepw:" + userId;
         if (loginAttempts.isLocked(lockKey)) {
-            throw new ApiException(429, "account_locked");
+            // Contract §H: soft-lock returns 429 rate_limited uniformly (never account_locked).
+            throw new ApiException(429, "rate_limited");
         }
         if (user.getPasswordHash() == null || !encoder.matches(currentPassword, user.getPasswordHash())) {
             loginAttempts.recordFailure(lockKey);

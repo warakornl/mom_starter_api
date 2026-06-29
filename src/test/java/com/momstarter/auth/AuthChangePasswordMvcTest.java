@@ -2,6 +2,7 @@ package com.momstarter.auth;
 
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
+import com.momstarter.auth.LoginAttemptService;
 import com.momstarter.auth.dto.LoginRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -100,5 +101,21 @@ class AuthChangePasswordMvcTest {
         mvc.perform(post("/auth/change-password").contentType(APPLICATION_JSON)
                         .content(body("oldpassword123", "newstrongpassword", "dev-current")))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void softLockedAccount_returns429RateLimited() throws Exception {
+        // Contract §H: after repeated wrong-current-password attempts the account is soft-locked;
+        // the response MUST be 429 rate_limited (not account_locked) so mobile can show the right copy.
+        for (int i = 0; i < LoginAttemptService.MAX_FAILURES; i++) {
+            mvc.perform(post("/auth/change-password").header("Authorization", "Bearer " + bearer)
+                            .contentType(APPLICATION_JSON).content(body("WRONG" + i, "newstrongpassword", "dev-current")))
+                    .andExpect(status().isUnauthorized()); // wrong current password
+        }
+        // Now the account is soft-locked — next attempt must yield 429 rate_limited
+        mvc.perform(post("/auth/change-password").header("Authorization", "Bearer " + bearer)
+                        .contentType(APPLICATION_JSON).content(body("oldpassword123", "newstrongpassword", "dev-current")))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.code").value("rate_limited"));
     }
 }

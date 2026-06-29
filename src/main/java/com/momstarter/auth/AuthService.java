@@ -59,7 +59,9 @@ public class AuthService {
         String email = normaliseEmail(req.email());
 
         if (loginAttempts.isLocked(email)) {
-            throw new ApiException(429, "account_locked");
+            // Contract §H: soft-lock returns 429 rate_limited (never account_locked) so all
+            // 429 cases are uniform — mobile client diffs on rate_limited for user-facing copy.
+            throw new ApiException(429, "rate_limited");
         }
 
         Optional<User> maybe = users.findByEmail(email);

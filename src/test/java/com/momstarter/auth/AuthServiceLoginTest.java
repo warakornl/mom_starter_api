@@ -109,7 +109,8 @@ class AuthServiceLoginTest {
     }
 
     @Test
-    void lockedAccount_yields429AccountLocked() {
+    void lockedAccount_yields429RateLimited() {
+        // Contract §H: soft-lock MUST return 429 rate_limited (not account_locked — mobile diffs on rate_limited)
         seedUser("mom@example.com", "correcthorsebattery", true);
         for (int i = 0; i < LoginAttemptService.MAX_FAILURES; i++) {
             loginAttempts.recordFailure("mom@example.com");
@@ -117,7 +118,11 @@ class AuthServiceLoginTest {
 
         assertThatThrownBy(() -> auth.login(new LoginRequest("mom@example.com", "correcthorsebattery", "d"), "ip"))
                 .isInstanceOf(ApiException.class)
-                .extracting("code").isEqualTo("account_locked");
+                .satisfies(ex -> {
+                    ApiException a = (ApiException) ex;
+                    assertThat(a.getStatus()).isEqualTo(429);
+                    assertThat(a.getCode()).isEqualTo("rate_limited");
+                });
     }
 
     @Test
