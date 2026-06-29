@@ -429,7 +429,32 @@ class ReminderSyncCollection implements SyncCollection {
         m.put("displayTitle", r.getDisplayTitle());
         m.put("sourceRefType", r.getSourceRefType());
         m.put("sourceRefId", r.getSourceRefId());
-        m.put("recurrenceRule", r.getRecurrenceRule());
+        // Deserialise the stored JSON string to a JsonNode so Jackson re-serialises it as a
+        // nested JSON object on the wire — matching the api-contract ReminderInput shape.
+        //
+        // H2 2.x in PostgreSQL MODE returns jsonb column values as a JSON-encoded string literal
+        // (outer double-quotes + backslash-escaped inner content) rather than the raw object text
+        // that PostgreSQL returns.  We therefore parse with readTree() first: if the result is an
+        // ObjectNode we use it directly (production / raw-text path); if it is a TextNode
+        // (H2 double-encoding path) we re-parse its text value to recover the actual object.
+        //
+        // Fallback: if both parse attempts fail (should not happen given push-path validation)
+        // we emit the raw string rather than throw a 500.
+        try {
+            String rrJson = r.getRecurrenceRule();
+            if (rrJson == null) {
+                m.put("recurrenceRule", null);
+            } else {
+                JsonNode node = objectMapper.readTree(rrJson);
+                if (node.isTextual()) {
+                    // H2 double-encoded the jsonb value as a JSON string; unwrap once.
+                    node = objectMapper.readTree(node.textValue());
+                }
+                m.put("recurrenceRule", node);
+            }
+        } catch (Exception ignored) {
+            m.put("recurrenceRule", r.getRecurrenceRule()); // last-resort raw string fallback
+        }
         m.put("startAt", r.getStartAt() != null ? r.getStartAt().format(CIVIL_MINUTE_FMT) : null);
         m.put("active", r.isActive());
         m.put("clientId", r.getClientId());
