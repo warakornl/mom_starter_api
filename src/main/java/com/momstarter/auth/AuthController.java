@@ -7,6 +7,7 @@ import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
 import com.momstarter.auth.dto.RegisterRequest;
+import com.momstarter.auth.dto.ResetPasswordRequest;
 import com.momstarter.auth.dto.ResendVerificationRequest;
 import com.momstarter.auth.dto.VerifyEmailRequest;
 import jakarta.servlet.http.HttpServletRequest;
@@ -47,6 +48,13 @@ public class AuthController {
                                                              HttpServletRequest httpRequest) {
         passwordRecoveryService.forgotPassword(request.email(), httpRequest.getRemoteAddr());
         return ResponseEntity.accepted().body(Map.of("code", "reset_requested"));
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<Void> resetPassword(@Valid @RequestBody ResetPasswordRequest request,
+                                              HttpServletRequest httpRequest) {
+        passwordRecoveryService.resetPassword(request.token(), request.newPassword(), httpRequest.getRemoteAddr());
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/register")
