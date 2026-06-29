@@ -95,6 +95,16 @@ public class AuthService {
         }
     }
 
+    /** Revoke one device's session ("sign out that tablet"). */
+    public void revokeDevice(UUID userId, String deviceId) {
+        refreshTokens.revokeDevice(userId, deviceId);
+    }
+
+    /** Revoke every session for the user (DELETE /auth/sessions). */
+    public void logoutAllDevices(UUID userId) {
+        refreshTokens.revokeAllForUser(userId);
+    }
+
     static String normaliseEmail(String email) {
         return email == null ? "" : email.trim().toLowerCase();
     }

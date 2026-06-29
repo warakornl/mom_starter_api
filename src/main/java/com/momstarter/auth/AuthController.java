@@ -10,7 +10,9 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -50,5 +52,18 @@ public class AuthController {
     @GetMapping("/sessions")
     public ResponseEntity<List<DeviceSession>> sessions(@AuthenticationPrincipal Jwt jwt) {
         return ResponseEntity.ok(authService.listSessions(UUID.fromString(jwt.getSubject())));
+    }
+
+    @DeleteMapping("/sessions/{deviceId}")
+    public ResponseEntity<Void> revokeSession(@PathVariable String deviceId,
+                                              @AuthenticationPrincipal Jwt jwt) {
+        authService.revokeDevice(UUID.fromString(jwt.getSubject()), deviceId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/sessions")
+    public ResponseEntity<Void> revokeAllSessions(@AuthenticationPrincipal Jwt jwt) {
+        authService.logoutAllDevices(UUID.fromString(jwt.getSubject()));
+        return ResponseEntity.noContent().build();
     }
 }

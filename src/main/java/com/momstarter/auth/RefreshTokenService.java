@@ -109,6 +109,15 @@ public class RefreshTokenService {
         }
     }
 
+    /** Revoke the family of every token bound to a given device (sign out that one device). */
+    public void revokeDevice(UUID userId, String deviceId) {
+        for (RefreshToken rt : tokens.findByUserId(userId)) {
+            if (deviceId.equals(rt.getDeviceId()) && rt.getRevokedAt() == null) {
+                revokeFamily(rt.getFamilyId());
+            }
+        }
+    }
+
     /** Revoke every family for a user (logout allDevices / password reset). */
     public void revokeAllForUser(UUID userId) {
         Instant t = now();
