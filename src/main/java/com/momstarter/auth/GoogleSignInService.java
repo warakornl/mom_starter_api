@@ -5,6 +5,7 @@ import com.momstarter.account.UserRepository;
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.error.ApiException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Google sign-in (§J/G1–G6). Google is the identity provider but the app mints its OWN session
@@ -34,8 +35,15 @@ public class GoogleSignInService {
         this.jwt = jwt;
     }
 
+    @Transactional
     public AuthTokens signIn(String idToken, String nonce, String deviceId) {
         GoogleIdentity google = verifier.verify(idToken, nonce); // 401 google_token_invalid on failure
+
+        // belt-and-suspenders at the session-minting boundary: never mint for an unverified email,
+        // even if a future verifier implementation regresses (the verifier owns this per G2).
+        if (!google.emailVerified()) {
+            throw new ApiException(401, "google_token_invalid");
+        }
 
         User user = identities.findByProviderAndProviderSub(PROVIDER, google.sub())
                 .map(link -> users.findById(link.getUserId())

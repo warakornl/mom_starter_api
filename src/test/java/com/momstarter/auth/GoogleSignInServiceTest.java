@@ -94,6 +94,16 @@ class GoogleSignInServiceTest {
     }
 
     @Test
+    void unverifiedGoogleEmail_returns401_andCreatesNothing() {
+        when(verifier.verify("tok", "nonce")).thenReturn(new GoogleIdentity("sub-x", "x@example.com", false));
+
+        assertThatThrownBy(() -> service.signIn("tok", "nonce", "dev-1"))
+                .isInstanceOf(ApiException.class)
+                .extracting("code").isEqualTo("google_token_invalid");
+        assertThat(users.findByEmail("x@example.com")).isEmpty();
+    }
+
+    @Test
     void invalidGoogleToken_propagates401() {
         when(verifier.verify("bad", "nonce")).thenThrow(new ApiException(401, "google_token_invalid"));
 
