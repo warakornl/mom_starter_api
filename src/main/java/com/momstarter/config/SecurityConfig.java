@@ -29,6 +29,8 @@ public class SecurityConfig {
             "/auth/register",
             "/auth/verify-email",
             "/auth/resend-verification",
+            "/auth/forgot-password",
+            "/auth/reset-password",
             "/auth/google",
             "/health"
     };

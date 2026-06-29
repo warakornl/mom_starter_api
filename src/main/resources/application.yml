@@ -21,3 +21,5 @@ momstarter:
     login-per-ip-per-min: 20
     register-per-ip-per-min: 15
     resend-per-ip-per-min: 10
+    forgot-per-ip-per-min: 10
+    reset-per-ip-per-min: 10

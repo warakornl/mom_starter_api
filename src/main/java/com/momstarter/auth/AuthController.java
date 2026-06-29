@@ -2,6 +2,7 @@ package com.momstarter.auth;
 
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.DeviceSession;
+import com.momstarter.auth.dto.ForgotPasswordRequest;
 import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
@@ -31,10 +32,21 @@ public class AuthController {
 
     private final AuthService authService;
     private final RegistrationService registrationService;
+    private final PasswordRecoveryService passwordRecoveryService;
 
-    public AuthController(AuthService authService, RegistrationService registrationService) {
+    public AuthController(AuthService authService,
+                          RegistrationService registrationService,
+                          PasswordRecoveryService passwordRecoveryService) {
         this.authService = authService;
         this.registrationService = registrationService;
+        this.passwordRecoveryService = passwordRecoveryService;
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<Map<String, String>> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request,
+                                                             HttpServletRequest httpRequest) {
+        passwordRecoveryService.forgotPassword(request.email(), httpRequest.getRemoteAddr());
+        return ResponseEntity.accepted().body(Map.of("code", "reset_requested"));
     }
 
     @PostMapping("/register")
