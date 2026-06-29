@@ -1,0 +1,334 @@
+package com.momstarter.sync;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.momstarter.account.User;
+import com.momstarter.account.UserRepository;
+import com.momstarter.auth.JwtService;
+import com.momstarter.pregnancy.ConsentChecker;
+import com.momstarter.reminder.Reminder;
+import com.momstarter.reminder.ReminderRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.MediaType;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * MVC integration tests for the {@code reminders} sync collection.
+ *
+ * <p>Covers (api-contract FLAG-4 / data-model §3.5):
+ * <ul>
+ *   <li>create → applied[] (version:=1)</li>
+ *   <li>LWW server_won conflict (base &lt; current)</li>
+ *   <li>tombstone → applied[]</li>
+ *   <li>recurrence-grammar reject: bad freq → rejected[validation_error]</li>
+ *   <li>recurrence-grammar reject: one_off with timesOfDay → rejected[validation_error]</li>
+ *   <li>recurrence-grammar reject: every_n_days missing interval → rejected[validation_error]</li>
+ *   <li>general_health consent gate → rejected[consent_required] via @MockBean</li>
+ *   <li>pull includes reminders collection in changes</li>
+ * </ul>
+ */
+@SpringBootTest
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+@TestPropertySource(properties = "spring.flyway.enabled=true")
+@Transactional
+class ReminderSyncMvcTest {
+
+    @Autowired private MockMvc mvc;
+    @Autowired private UserRepository users;
+    @Autowired private ReminderRepository reminders;
+    @Autowired private JwtService jwtService;
+    @Autowired private ObjectMapper objectMapper;
+
+    @MockBean
+    private ConsentChecker consentChecker;
+
+    private User user;
+    private String bearer;
+    private UUID userId;
+
+    @BeforeEach
+    void setup() {
+        reminders.deleteAll();
+        users.deleteAll();
+        user = new User();
+        user.setEmail("reminder-sync@example.com");
+        user.setEmailVerified(true);
+        user = users.save(user);
+        userId = user.getId();
+        bearer = jwtService.issueAccessToken(userId, true);
+        // Default: all consents granted
+        when(consentChecker.isGranted(any(UUID.class), any(String.class))).thenReturn(true);
+    }
+
+    // -------------------------------------------------------------------------
+    // Create — new reminder with valid daily rule → applied[]
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_createReminder_daily_applied() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "daily",
+                "timesOfDay", List.of("08:00", "20:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Take vitamins",
+                "medication", rule, "2026-07-01T08:00");
+
+        MvcResult result = mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].collection").value("reminders"))
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.applied[0].version").value(1))
+                .andExpect(jsonPath("$.conflicts").isEmpty())
+                .andExpect(jsonPath("$.rejected").isEmpty())
+                .andReturn();
+
+        Reminder saved = reminders.findById(id).orElseThrow();
+        assertThat(saved.getUserId()).isEqualTo(userId);
+        assertThat(saved.getDisplayTitle()).isEqualTo("Take vitamins");
+        assertThat(saved.getVersion()).isEqualTo(1L);
+    }
+
+    // -------------------------------------------------------------------------
+    // LWW conflict — base < current → server_won
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_staleVersion_serverWonConflict() throws Exception {
+        // Seed existing reminder at version 1
+        UUID id = UUID.randomUUID();
+        Reminder existing = seedReminder(id, "daily", Map.of(
+                "freq", "daily",
+                "timesOfDay", List.of("08:00")));
+        long currentVersion = existing.getVersion(); // 1
+
+        Map<String, Object> rule = Map.of("freq", "daily", "timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, currentVersion - 1, "Stale edit",
+                "medication", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(), List.of(record), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.conflicts[0].collection").value("reminders"))
+                .andExpect(jsonPath("$.conflicts[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.conflicts[0].resolution").value("server_won"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Tombstone — delete applied unconditionally
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_delete_tombstoned() throws Exception {
+        UUID id = UUID.randomUUID();
+        seedReminder(id, "daily", Map.of("freq", "daily", "timesOfDay", List.of("08:00")));
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(), List.of(),
+                                List.of(id.toString()))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].collection").value("reminders"))
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.conflicts").isEmpty())
+                .andExpect(jsonPath("$.rejected").isEmpty());
+
+        assertThat(reminders.findById(id).orElseThrow().getDeletedAt()).isNotNull();
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — bad freq
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_badFreq_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of("freq", "weekly", "timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Bad freq",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].collection").value("reminders"))
+                .andExpect(jsonPath("$.rejected[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — one_off with timesOfDay (forbidden per FLAG-4 §a)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_oneOff_withTimesOfDay_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "one_off",
+                "timesOfDay", List.of("08:00")); // FORBIDDEN on one_off
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Bad one_off",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — every_n_days without interval
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_everyNDays_missingInterval_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "every_n_days",
+                "timesOfDay", List.of("08:00")); // interval absent → invalid
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Bad every_n_days",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Consent gate — general_health absent → rejected[consent_required]
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_generalHealthConsentAbsent_rejectedConsentRequired() throws Exception {
+        // cloud_storage granted; general_health denied
+        when(consentChecker.isGranted(eq(userId), eq("cloud_storage"))).thenReturn(true);
+        when(consentChecker.isGranted(eq(userId), eq("general_health"))).thenReturn(false);
+
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of("freq", "one_off");
+        Map<String, Object> record = buildReminderRecord(id, 0L, "No consent",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].collection").value("reminders"))
+                .andExpect(jsonPath("$.rejected[0].code").value("consent_required"))
+                .andExpect(jsonPath("$.rejected[0].details").value("general_health"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Pull — reminders collection appears in changes
+    // -------------------------------------------------------------------------
+
+    @Test
+    void pull_includesReminders() throws Exception {
+        seedReminder(UUID.randomUUID(), "one_off",
+                Map.of("freq", "one_off"));
+
+        MvcResult result = mvc.perform(get("/sync/pull")
+                        .header("Authorization", "Bearer " + bearer))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String body = result.getResponse().getContentAsString();
+        var responseNode = objectMapper.readTree(body);
+        assertThat(responseNode.has("changes")).isTrue();
+        assertThat(responseNode.at("/changes/reminders").isMissingNode()).isFalse();
+        var updated = responseNode.at("/changes/reminders/updated");
+        assertThat(updated.isArray()).isTrue();
+        assertThat(updated.size()).isGreaterThan(0);
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    private Map<String, Object> buildReminderRecord(UUID id, long version, String displayTitle,
+                                                    String type, Map<String, Object> rule,
+                                                    String startAt) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("id", id.toString());
+        r.put("version", version);
+        r.put("displayTitle", displayTitle);
+        r.put("type", type);
+        r.put("recurrenceRule", objectMapper.valueToTree(rule).toString());
+        r.put("startAt", startAt);
+        r.put("active", true);
+        r.put("clientId", UUID.randomUUID().toString());
+        return r;
+    }
+
+    private String buildPushBody(String coll, List<Map<String, Object>> created,
+                                  List<Map<String, Object>> updated, List<String> deleted)
+            throws Exception {
+        return objectMapper.writeValueAsString(Map.of(
+                "changes", Map.of(
+                        coll, Map.of(
+                                "created", created,
+                                "updated", updated,
+                                "deleted", deleted
+                        )
+                ),
+                "lastPulledAt", "0"
+        ));
+    }
+
+    /** Seeds a reminder directly into the DB (bypasses push path). */
+    private Reminder seedReminder(UUID id, String freq, Map<String, Object> ruleFields)
+            throws Exception {
+        Reminder r = new Reminder();
+        r.setId(id);
+        r.setUserId(userId);
+        r.setType("custom");
+        r.setDisplayTitle("Seeded " + id);
+        r.setRecurrenceRule(objectMapper.writeValueAsString(ruleFields));
+        r.setStartAt(LocalDateTime.of(2026, 7, 1, 8, 0));
+        r.setActive(true);
+        r = reminders.saveAndFlush(r);
+        reminders.initVersionToOne(r.getId());
+        // Reload to get version=1
+        return reminders.findById(id).orElseThrow();
+    }
+}

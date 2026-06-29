@@ -36,7 +36,11 @@ public class SyncCollectionRegistry {
      * NOT managed as a {@link SyncCollection} (it is hardcoded in the pull path). It is
      * appended last in the pull response by {@code SyncService}.
      */
-    static final List<String> PULL_ORDER = List.of("supplyItems");
+    static final List<String> PULL_ORDER = List.of(
+            "supplyItems",
+            "reminders",
+            "reminderOccurrences",
+            "checklistItems");
 
     public SyncCollectionRegistry(List<SyncCollection> collections) {
         this.byName = collections.stream()
