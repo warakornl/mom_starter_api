@@ -38,3 +38,34 @@ momstarter:
 google:
   client-id: ${GOOGLE_CLIENT_ID:}
   jwks-uri: https://www.googleapis.com/oauth2/v3/certs
+
+# ---------------------------------------------------------------------------
+# Actuator + Micrometer (observability).
+# Runs on the SAME port as the API (8080) inside the Docker network.
+# PROD NOTE: Move to a dedicated management port (management.server.port=8081)
+# and restrict that port to internal/VPC traffic only — never expose to internet.
+# ---------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      # base-path is relative to server.servlet.context-path (/v1), so full URLs are:
+      #   /v1/actuator/health   /v1/actuator/prometheus   /v1/actuator/info
+      base-path: /actuator
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      # Enable full histogram buckets so Grafana can compute p50/p95/p99 per endpoint
+      percentiles-histogram:
+        http.server.requests: true
+      # Pre-compute server-side percentile approximations (lower cardinality alternative)
+      percentiles:
+        http.server.requests: 0.5,0.95,0.99
+      # SLO buckets: help count requests faster/slower than each threshold
+      slo:
+        http.server.requests: 100ms,250ms,500ms,1s

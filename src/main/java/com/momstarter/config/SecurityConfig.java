@@ -22,7 +22,18 @@ import java.util.Map;
 @Configuration
 public class SecurityConfig {
 
-    /** The unauthenticated auth surface (matches the contract's public-endpoint list). */
+    /**
+     * The unauthenticated surface: auth endpoints + actuator health/prometheus.
+     *
+     * <p>Actuator paths are relative to the servlet context-path (/v1), so full URLs are
+     * /v1/actuator/health and /v1/actuator/prometheus. Prometheus scrapes from within the
+     * Docker internal network only — there is NO public internet access to these paths in prod.
+     *
+     * <p>PROD NOTE: the recommended hardening is to run actuator on a separate management
+     * port (management.server.port=8081) with network-level restriction (security-group /
+     * VPC-only), removing the need for Spring Security to guard them. See
+     * docs/architecture/infrastructure-diagram.md for the target AWS network topology.
+     */
     static final String[] PUBLIC_PATHS = {
             "/auth/login",
             "/auth/refresh",
@@ -32,7 +43,12 @@ public class SecurityConfig {
             "/auth/forgot-password",
             "/auth/reset-password",
             "/auth/google",
-            "/health"
+            "/health",
+            // Actuator: health check (load-balancer probe + Prometheus liveness) and metrics scrape.
+            // Allowed from internal Docker network; must be blocked at network layer in prod.
+            "/actuator/health",
+            "/actuator/health/**",
+            "/actuator/prometheus"
     };
 
     @Bean

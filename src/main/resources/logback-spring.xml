@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Structured JSON logging — stdout only.
+  Fields sent to Elasticsearch via Filebeat:
+    @timestamp, level, logger_name, message
+    + MDC (set by AccessLogFilter): requestId, method, path, status, durationMs
+  Dev/local profile falls back to human-readable console pattern for readability.
+  See monitoring/README.md for Kibana index-pattern setup.
+-->
+<configuration>
+
+    <!-- ================================================================
+         JSON appender — used in prod/docker (active when NOT local/test)
+         ================================================================ -->
+    <springProfile name="!local &amp; !test">
+        <appender name="JSON_STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- Use ISO-8601 with milliseconds so ES/Kibana can auto-detect timestamp -->
+                <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</timestampPattern>
+                <!-- Include all MDC keys (requestId, method, path, status, durationMs) -->
+                <includeMdcKeyName>requestId</includeMdcKeyName>
+                <includeMdcKeyName>method</includeMdcKeyName>
+                <includeMdcKeyName>path</includeMdcKeyName>
+                <includeMdcKeyName>status</includeMdcKeyName>
+                <includeMdcKeyName>durationMs</includeMdcKeyName>
+                <!-- Shorten field names to keep ES mapping clean -->
+                <fieldNames>
+                    <timestamp>@timestamp</timestamp>
+                    <message>message</message>
+                    <logger>logger_name</logger>
+                    <level>level</level>
+                    <levelValue>[ignore]</levelValue>
+                    <thread>thread_name</thread>
+                    <stackTrace>stack_trace</stackTrace>
+                </fieldNames>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="JSON_STDOUT"/>
+        </root>
+    </springProfile>
+
+    <!-- ================================================================
+         Human-readable console — local and test profiles only
+         ================================================================ -->
+    <springProfile name="local,test">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [%X{requestId}] - %msg%n</pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+</configuration>
