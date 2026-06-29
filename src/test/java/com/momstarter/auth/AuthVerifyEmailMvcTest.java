@@ -84,6 +84,8 @@ class AuthVerifyEmailMvcTest {
         mvc.perform(post("/auth/verify-email").contentType(APPLICATION_JSON)
                         .content("{\"token\":\"never-issued\"}"))
                 .andExpect(status().isGone())
-                .andExpect(jsonPath("$.code").value("verify_token_invalid"));
+                .andExpect(jsonPath("$.code").value("verify_token_invalid"))
+                // Contract error shape: { code, message, details? } — message must be present and non-blank
+                .andExpect(jsonPath("$.message").isNotEmpty());
     }
 }

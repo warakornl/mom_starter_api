@@ -77,8 +77,9 @@ class AuthGoogleMvcTest {
     }
 
     @Test
-    void malformedBody_returns400() throws Exception {
+    void blankFields_returns422ValidationError() throws Exception {
         mvc.perform(post("/auth/google").contentType(APPLICATION_JSON).content("{\"idToken\":\"\",\"nonce\":\"\"}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("validation_error"));
     }
 }

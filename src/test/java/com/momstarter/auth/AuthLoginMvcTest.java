@@ -75,9 +75,13 @@ class AuthLoginMvcTest {
     }
 
     @Test
-    void malformedBody_returns400() throws Exception {
+    void blankFields_returns422ValidationError() throws Exception {
+        // Contract: @Valid failures → 422 + Problem { code: "validation_error", message, details[] }
         mvc.perform(post("/auth/login").contentType(APPLICATION_JSON)
                         .content("{\"email\":\"\",\"password\":\"\"}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("validation_error"))
+                .andExpect(jsonPath("$.message").isNotEmpty())
+                .andExpect(jsonPath("$.details").isArray());
     }
 }
