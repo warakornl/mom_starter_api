@@ -233,6 +233,216 @@ class ReminderSyncMvcTest {
                 .andExpect(jsonPath("$.applied").isEmpty());
     }
 
+    // =========================================================================
+    // Grammar reject — timesOfDay / interval / until regression guards (🟡-1)
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — empty timesOfDay
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_emptyTimesOfDay_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "daily",
+                "timesOfDay", List.of()); // empty list — forbidden
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Empty times",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].collection").value("reminders"))
+                .andExpect(jsonPath("$.rejected[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — unsorted timesOfDay (["20:00","08:00"])
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_unsortedTimesOfDay_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "daily",
+                "timesOfDay", List.of("20:00", "08:00")); // descending order — forbidden
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Unsorted times",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — duplicate timesOfDay (["08:00","08:00"])
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_duplicateTimesOfDay_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "daily",
+                "timesOfDay", List.of("08:00", "08:00")); // duplicate — forbidden
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Dup times",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — non-HH:mm format ("8am" — no zero-pad, wrong separator)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_nonHHmmFormat_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "daily",
+                "timesOfDay", List.of("8am")); // "8am" is not HH:mm
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Bad format 8am",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — out-of-range HH:mm ("25:00" — hour > 23)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_outOfRangeHHmm_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "daily",
+                "timesOfDay", List.of("25:00")); // hour 25 is outside 00-23
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Bad hour 25",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — interval present on daily (interval != 1 is forbidden)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_intervalOnDaily_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.<String, Object>of(
+                "freq", "daily",
+                "timesOfDay", List.of("08:00"),
+                "interval", 2); // interval forbidden on daily (value != 1)
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Interval on daily",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — interval=0 on every_n_days (must be >= 1)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_intervalZeroOnEveryNDays_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.<String, Object>of(
+                "freq", "every_n_days",
+                "timesOfDay", List.of("08:00"),
+                "interval", 0); // interval < 1 → rejected
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Zero interval",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — until present on one_off (forbidden per FLAG-4 §a)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_untilOnOneOff_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "one_off",
+                "until", "2026-12-31"); // until is forbidden on one_off
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Until on one_off",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // No over-reject — valid every_n_days record is applied
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_validEveryNDays_applied() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.<String, Object>of(
+                "freq", "every_n_days",
+                "timesOfDay", List.of("08:00", "20:00"),
+                "interval", 3); // valid: interval >= 1, sorted timesOfDay
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Every 3 days",
+                "medication", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].collection").value("reminders"))
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.applied[0].version").value(1))
+                .andExpect(jsonPath("$.rejected").isEmpty())
+                .andExpect(jsonPath("$.conflicts").isEmpty());
+    }
+
     // -------------------------------------------------------------------------
     // Consent gate — general_health absent → rejected[consent_required]
     // -------------------------------------------------------------------------

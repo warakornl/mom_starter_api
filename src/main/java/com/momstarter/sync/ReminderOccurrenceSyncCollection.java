@@ -128,7 +128,9 @@ class ReminderOccurrenceSyncCollection implements SyncCollection {
                     new Rejected(COLLECTION, suppliedId, "validation_error",
                             "scheduledLocalTime must be YYYY-MM-DDTHH:mm (minute precision)"));
         }
-        // Second must be 0 (minute precision)
+        // Defensive backstop — CIVIL_MINUTE_FMT ("yyyy-MM-dd'T'HH:mm") cannot parse seconds,
+        // so any input with seconds would have already failed parseCivilMinute() above;
+        // this branch is unreachable in practice.
         if (scheduledLocalTime.getSecond() != 0 || scheduledLocalTime.getNano() != 0) {
             return new SyncApplyResult.RejectedResult(
                     new Rejected(COLLECTION, suppliedId, "validation_error",

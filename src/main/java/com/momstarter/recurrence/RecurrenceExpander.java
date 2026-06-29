@@ -61,16 +61,19 @@ public final class RecurrenceExpander {
         int step = (freq == Freq.DAILY) ? 1 : Math.max(1, interval);
 
         // First on-grid occurrence on/after the window start.
-        // gap = max(0, civilDaysBetween(anchor.date, windowStart))
-        // k0  = ceil(gap / step)
+        // Branch A (anchor.date < windowStart): gap = between(anchor.date, windowStart);
+        //   k0 = ceil(gap / step); first = anchor.date + k0*step.
+        // Branch B (anchor.date >= windowStart, including GV-5 window-before-anchor):
+        //   the if-block is skipped entirely; first = startDate; gap and k0 are NOT computed.
         LocalDate first = startDate;
         if (first.isBefore(windowStart)) {
             long gap = ChronoUnit.DAYS.between(startDate, windowStart);
             long k0 = (gap + step - 1) / step; // ceil(gap / step)
             first = startDate.plusDays(k0 * step);
         }
-        // If first > hardEnd (anchor date is after window end or k0 advances past end)
-        // the loop body never executes → empty result (covers GV-5 / window-before-anchor).
+        // GV-5 (window entirely before anchor): Branch B was taken; first = startDate.
+        // Since startDate > hardEnd, the loop never executes → empty result.
+        // Note: k0 is not computed in this path.
 
         for (LocalDate d = first; !d.isAfter(hardEnd); d = d.plusDays(step)) {
             boolean isAnchorDate = d.equals(startDate);
