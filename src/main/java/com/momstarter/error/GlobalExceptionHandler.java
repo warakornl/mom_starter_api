@@ -44,7 +44,11 @@ public class GlobalExceptionHandler {
             Map.entry("precondition_required",    "If-Match header is required for this operation."),
             Map.entry("precondition_failed",      "If-Match header value is invalid or unrecognised."),
             // Birth-event lifecycle codes (api-contract §409 invalid_lifecycle_state)
-            Map.entry("invalid_lifecycle_state",  "The profile lifecycle state does not allow this operation.")
+            Map.entry("invalid_lifecycle_state",  "The profile lifecycle state does not allow this operation."),
+            // Offline-sync engine error codes (api-contract "Offline-sync engine (PINNED)")
+            Map.entry("batch_too_large",          "Batch exceeds maximum allowed size (1000 records or 5 MB)."),
+            Map.entry("invalid_cursor",           "Continuation cursor is invalid or has expired."),
+            Map.entry("watermark_expired",        "Watermark is too old. A full resync is required.")
     );
 
     private static String messageFor(String code) {
