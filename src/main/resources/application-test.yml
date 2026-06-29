@@ -1,0 +1,13 @@
+# Test profile — in-memory H2 in PostgreSQL-compatibility mode.
+# Flyway is OFF here for the bare smoke test (Task 0.1); migration-backed
+# @DataJpaTest slices (Task 0.2+) enable it explicitly.
+spring:
+  datasource:
+    url: jdbc:h2:mem:momstarter;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: none
+  flyway:
+    enabled: false

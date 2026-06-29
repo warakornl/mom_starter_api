@@ -1,0 +1,15 @@
+# Default / production profile. No secrets hardcoded — everything comes from env
+# (Secrets Manager in prod, per docs/architecture/infrastructure-diagram.md).
+spring:
+  application:
+    name: mom-starter-api
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/momstarter}
+    username: ${DB_USERNAME:momstarter}
+    password: ${DB_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: none      # schema is owned by Flyway, never by Hibernate
+    open-in-view: false
+  flyway:
+    enabled: true
