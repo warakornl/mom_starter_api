@@ -24,21 +24,24 @@ public class GlobalExceptionHandler {
 
     /** Generic, non-sensitive message for each domain code. */
     private static final Map<String, String> CODE_MESSAGES = Map.ofEntries(
-            Map.entry("invalid_credentials",  "Invalid email or password."),
-            Map.entry("rate_limited",         "Too many requests. Please try again later."),
-            Map.entry("token_reuse_detected", "Session invalid. Please sign in again."),
-            Map.entry("invalid_token",        "Invalid or expired token."),
-            Map.entry("verify_token_invalid", "Verification link is invalid or expired."),
-            Map.entry("reset_token_invalid",  "Reset link is invalid or expired."),
-            Map.entry("email_unverified",     "Email address must be verified before proceeding."),
-            Map.entry("consent_required",     "Consent is required before proceeding."),
-            Map.entry("google_token_invalid", "Google sign-in token is invalid."),
-            Map.entry("link_required",        "An account with this email already exists."),
-            Map.entry("identity_in_use",      "This Google account is already linked to another user."),
-            Map.entry("last_credential",      "Cannot remove the last sign-in method."),
-            Map.entry("password_too_short",   "Password does not meet minimum length requirements."),
-            Map.entry("password_breached",    "Password has been found in a known data breach."),
-            Map.entry("validation_error",     "One or more fields are invalid.")
+            Map.entry("invalid_credentials",   "Invalid email or password."),
+            Map.entry("rate_limited",          "Too many requests. Please try again later."),
+            Map.entry("token_reuse_detected",  "Session invalid. Please sign in again."),
+            Map.entry("invalid_token",         "Invalid or expired token."),
+            Map.entry("verify_token_invalid",  "Verification link is invalid or expired."),
+            Map.entry("reset_token_invalid",   "Reset link is invalid or expired."),
+            Map.entry("email_unverified",      "Email address must be verified before proceeding."),
+            Map.entry("consent_required",      "Consent is required before proceeding."),
+            Map.entry("google_token_invalid",  "Google sign-in token is invalid."),
+            Map.entry("link_required",         "An account with this email already exists."),
+            Map.entry("identity_in_use",       "This Google account is already linked to another user."),
+            Map.entry("last_credential",       "Cannot remove the last sign-in method."),
+            Map.entry("password_too_short",    "Password does not meet minimum length requirements."),
+            Map.entry("password_breached",     "Password has been found in a known data breach."),
+            Map.entry("validation_error",      "One or more fields are invalid."),
+            // Pregnancy-profile / optimistic-concurrency codes
+            Map.entry("not_found",             "The requested resource was not found."),
+            Map.entry("precondition_required", "If-Match header is required for this operation.")
     );
 
     private static String messageFor(String code) {
