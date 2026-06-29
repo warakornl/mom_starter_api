@@ -1,0 +1,142 @@
+package com.momstarter.auth;
+
+import com.momstarter.error.ApiException;
+import org.springframework.stereotype.Service;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Base64;
+import java.util.HexFormat;
+import java.util.UUID;
+
+/**
+ * Opaque, rotating refresh tokens with reuse-detection (§A/§B).
+ *
+ * <p>The raw token (256-bit CSPRNG) is returned to the caller but only its SHA-256 is
+ * ever stored. Every rotation mints a new token and consumes the presented one; replaying
+ * an already-rotated token is treated as theft and burns the entire device family.
+ */
+@Service
+public class RefreshTokenService {
+
+    static final Duration REFRESH_TTL = Duration.ofDays(30);
+
+    private static final SecureRandom RANDOM = new SecureRandom();
+    private static final Base64.Encoder URL_ENCODER = Base64.getUrlEncoder().withoutPadding();
+
+    private final RefreshTokenRepository tokens;
+    private final Clock clock;
+
+    public RefreshTokenService(RefreshTokenRepository tokens, Clock clock) {
+        this.tokens = tokens;
+        this.clock = clock;
+    }
+
+    /** Raw token plus its absolute expiry — returned to the client, never persisted as-is. */
+    public record Issued(String rawToken, Instant expiresAt) {
+    }
+
+    /** Start a brand-new family (a session-minting event: login / verify-email). */
+    public Issued mintFamily(UUID userId, String deviceId, String deviceName) {
+        String raw = generateRawToken();
+        RefreshToken rt = new RefreshToken();
+        rt.setUserId(userId);
+        rt.setTokenHash(sha256Hex(raw));
+        rt.setFamilyId(UUID.randomUUID());
+        rt.setDeviceId(deviceId);
+        rt.setDeviceName(deviceName);
+        rt.setExpiresAt(now().plus(REFRESH_TTL));
+        tokens.save(rt);
+        return new Issued(raw, rt.getExpiresAt());
+    }
+
+    /** Rotate the presented token, detecting reuse. */
+    public Issued rotate(String rawToken, String deviceId) {
+        RefreshToken presented = tokens.findByTokenHash(sha256Hex(rawToken))
+                .orElseThrow(() -> new ApiException(401, "invalid_token"));
+
+        if (presented.getRevokedAt() != null) {
+            // A revoked token was presented. If it had been rotated away (has a successor),
+            // this is a replay = theft -> burn the whole family. Otherwise it was a logout /
+            // family-revoke (no successor) -> simply invalid.
+            if (tokens.existsByPreviousId(presented.getId())) {
+                revokeFamily(presented.getFamilyId());
+                throw new ApiException(401, "token_reuse_detected");
+            }
+            throw new ApiException(401, "invalid_token");
+        }
+
+        if (presented.getExpiresAt().isBefore(now())) {
+            throw new ApiException(401, "invalid_token");
+        }
+
+        String raw = generateRawToken();
+        RefreshToken next = new RefreshToken();
+        next.setUserId(presented.getUserId());
+        next.setTokenHash(sha256Hex(raw));
+        next.setFamilyId(presented.getFamilyId());
+        next.setDeviceId(deviceId != null ? deviceId : presented.getDeviceId());
+        next.setDeviceName(presented.getDeviceName());
+        next.setPreviousId(presented.getId());
+        next.setExpiresAt(now().plus(REFRESH_TTL));
+        tokens.save(next);
+
+        presented.setRevokedAt(now());
+        presented.setLastSeenAt(now());
+        tokens.save(presented);
+
+        return new Issued(raw, next.getExpiresAt());
+    }
+
+    /** Revoke every still-active token in a device family (theft response / single-device logout). */
+    public void revokeFamily(UUID familyId) {
+        Instant t = now();
+        for (RefreshToken rt : tokens.findByFamilyId(familyId)) {
+            if (rt.getRevokedAt() == null) {
+                rt.setRevokedAt(t);
+                tokens.save(rt);
+            }
+        }
+    }
+
+    /** Revoke every family for a user (logout allDevices / password reset). */
+    public void revokeAllForUser(UUID userId) {
+        Instant t = now();
+        for (RefreshToken rt : tokens.findByUserId(userId)) {
+            if (rt.getRevokedAt() == null) {
+                rt.setRevokedAt(t);
+                tokens.save(rt);
+            }
+        }
+    }
+
+    /** Revoke the family that owns the presented raw token (logout of one session). */
+    public void revokeByRawToken(String rawToken) {
+        tokens.findByTokenHash(sha256Hex(rawToken))
+                .ifPresent(rt -> revokeFamily(rt.getFamilyId()));
+    }
+
+    private Instant now() {
+        return clock.instant();
+    }
+
+    private static String generateRawToken() {
+        byte[] bytes = new byte[32]; // 256-bit
+        RANDOM.nextBytes(bytes);
+        return URL_ENCODER.encodeToString(bytes);
+    }
+
+    public static String sha256Hex(String raw) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+}
