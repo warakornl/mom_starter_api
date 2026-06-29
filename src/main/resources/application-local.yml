@@ -1,0 +1,17 @@
+# Local pentest/dev profile — real PostgreSQL (Docker) for production-faithful behaviour,
+# Flyway on, real (low) rate limits so throttling can be demonstrated. NOT for production.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/momstarter
+    username: momstarter
+    password: momstarter
+  jpa:
+    hibernate:
+      ddl-auto: none
+  flyway:
+    enabled: true
+momstarter:
+  ratelimit:
+    login-per-ip-per-min: 50      # high enough to let the per-account lockout (10) demo run first
+    register-per-ip-per-min: 5    # low so the register throttle is easy to demonstrate
+    resend-per-ip-per-min: 5
