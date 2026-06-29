@@ -416,12 +416,16 @@ class SyncPullMvcTest {
     void pull_coldStart_returnsTimestampAsW1() throws Exception {
         savedItem("An Item", "other");
 
-        Instant before = Instant.now();
+        // Truncate to milliseconds: SyncService stamps W1 with .truncatedTo(MILLIS).
+        // Without truncation, sub-millisecond jitter in Instant.now() can make `before`
+        // land a few microseconds AFTER W1 within the same millisecond, failing the
+        // isAfterOrEqualTo check non-deterministically.
+        Instant before = Instant.now().truncatedTo(ChronoUnit.MILLIS);
         MvcResult result = mvc.perform(get("/sync/pull")
                         .header("Authorization", "Bearer " + bearer))
                 .andExpect(status().isOk())
                 .andReturn();
-        Instant after = Instant.now();
+        Instant after = Instant.now().truncatedTo(ChronoUnit.MILLIS).plusMillis(1);
 
         var body = objectMapper.readTree(result.getResponse().getContentAsString());
         Instant w1 = Instant.parse(body.get("timestamp").asText());
