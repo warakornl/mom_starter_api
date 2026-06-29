@@ -2,6 +2,7 @@ package com.momstarter.auth;
 
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.DeviceSession;
+import com.momstarter.auth.dto.GoogleSignInRequest;
 import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
@@ -31,10 +32,19 @@ public class AuthController {
 
     private final AuthService authService;
     private final RegistrationService registrationService;
+    private final GoogleSignInService googleSignInService;
 
-    public AuthController(AuthService authService, RegistrationService registrationService) {
+    public AuthController(AuthService authService,
+                          RegistrationService registrationService,
+                          GoogleSignInService googleSignInService) {
         this.authService = authService;
         this.registrationService = registrationService;
+        this.googleSignInService = googleSignInService;
+    }
+
+    @PostMapping("/google")
+    public ResponseEntity<AuthTokens> google(@Valid @RequestBody GoogleSignInRequest request) {
+        return ResponseEntity.ok(googleSignInService.signIn(request.idToken(), request.nonce(), request.deviceId()));
     }
 
     @PostMapping("/register")
