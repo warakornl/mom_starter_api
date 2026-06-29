@@ -40,9 +40,11 @@ public class GlobalExceptionHandler {
             Map.entry("password_breached",     "Password has been found in a known data breach."),
             Map.entry("validation_error",      "One or more fields are invalid."),
             // Pregnancy-profile / optimistic-concurrency codes
-            Map.entry("not_found",             "The requested resource was not found."),
-            Map.entry("precondition_required", "If-Match header is required for this operation."),
-            Map.entry("precondition_failed",   "If-Match header value is invalid or unrecognised.")
+            Map.entry("not_found",                "The requested resource was not found."),
+            Map.entry("precondition_required",    "If-Match header is required for this operation."),
+            Map.entry("precondition_failed",      "If-Match header value is invalid or unrecognised."),
+            // Birth-event lifecycle codes (api-contract §409 invalid_lifecycle_state)
+            Map.entry("invalid_lifecycle_state",  "The profile lifecycle state does not allow this operation.")
     );
 
     private static String messageFor(String code) {

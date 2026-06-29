@@ -1,6 +1,7 @@
 package com.momstarter.pregnancy;
 
 import com.momstarter.error.ApiException;
+import com.momstarter.pregnancy.dto.BirthEventInput;
 import com.momstarter.pregnancy.dto.PregnancyProfileInput;
 import com.momstarter.pregnancy.dto.PregnancyProfileResponse;
 import org.springframework.stereotype.Service;
@@ -11,14 +12,19 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Business logic for GET/PUT /pregnancy-profile (api-contract "Pregnancy Profile" section,
- * data-model §3.1, OQ-4/5/6/7/9/16).
+ * Business logic for GET/PUT /pregnancy-profile and POST /pregnancy-profile/birth-event.
  *
  * <p>Validates input, checks the consent gate (via the {@link ConsentChecker} seam — currently
- * always-granted pending the account/consents feature), applies the EDD window guard, and enforces
- * optimistic concurrency via the {@code If-Match} header.
+ * always-granted pending the account/consents feature), and enforces optimistic concurrency
+ * via the {@code If-Match} header.
  *
- * <p>This phase is pregnant-lifecycle only. The birth-event phase (OQ-8/10/11/12/13) is deferred.
+ * <p>Supports both lifecycle modes ({@code pregnant} and {@code postpartum}):
+ * <ul>
+ *   <li>{@link #get} / {@link #put} return the appropriate snapshot for whichever
+ *       lifecycle state the profile is currently in.</li>
+ *   <li>{@link #recordBirthEvent} implements the {@code pregnant → postpartum} transition
+ *       (api-contract "Birth-event &amp; postpartum counting — PINNED", OQ-8/10/11/12/13).</li>
+ * </ul>
  */
 @Service
 public class PregnancyProfileService {
@@ -39,19 +45,21 @@ public class PregnancyProfileService {
     // -------------------------------------------------------------------------
 
     /**
-     * Returns the live (non-deleted) profile for the user, with a derived gestational-age
-     * snapshot computed from {@code clientDate}.
+     * Returns the live (non-deleted) profile for the user, with a derived snapshot
+     * computed from {@code clientDate}.
+     *
+     * <p>Returns a gestational-age snapshot when {@code lifecycle = "pregnant"} and a
+     * postpartum snapshot when {@code lifecycle = "postpartum"} (data-model §3.1).
      *
      * @param userId     authenticated user id (JWT subject)
      * @param clientDate the civil "today" for the snapshot ({@code X-Client-Date} or UTC fallback)
      * @return the response DTO
-     * @throws ApiException 404 {@code not_found} when no profile exists yet (OQ-4)
+     * @throws ApiException 404 {@code not_found} when no live profile exists
      */
     @Transactional(readOnly = true)
     public PregnancyProfileResponse get(UUID userId, LocalDate clientDate) {
         PregnancyProfile profile = requireProfile(userId);
-        GestationalAge ga = GestationalAge.compute(profile.getEdd(), clientDate, profile.getLifecycle());
-        return PregnancyProfileResponse.of(profile, ga);
+        return buildResponse(profile, clientDate);
     }
 
     // -------------------------------------------------------------------------
@@ -72,19 +80,16 @@ public class PregnancyProfileService {
      * <p>Rules (api-contract B2 / OQ-4/5/6/7/9):
      * <ol>
      *   <li>XOR validation: exactly one of {@code edd} / {@code currentWeek} must be present.</li>
-     *   <li>Consent gate: {@code general_health} must be granted (403 if not). Currently always
-     *       granted via the {@link AlwaysGrantedConsentChecker} seam.</li>
+     *   <li>Consent gate: {@code general_health} must be granted (403 if not).</li>
      *   <li>{@code currentWeek → edd} back-computation: {@code edd = clientDate + (280 − N*7)}.</li>
      *   <li>EDD plausibility window: {@code clientDate−28d ≤ edd ≤ clientDate+308d} → 422.</li>
-     *   <li>Create (no existing row): persist new profile → return Created (HTTP 201). No
-     *       {@code If-Match} required for a create.</li>
+     *   <li>Create (no existing row): persist new profile → return Created (HTTP 201).</li>
      *   <li>Update (row exists):
      *       <ul>
-     *         <li>{@code If-Match} header absent → 428 Precondition Required.</li>
-     *         <li>Version mismatch → throw {@link StaleVersionException} with current profile
-     *             (caller returns 409 with current body).</li>
-     *         <li>Version matches, EDD unchanged → no-op, return Updated (HTTP 200, version NOT bumped).</li>
-     *         <li>Version matches, EDD changed → persist update, return Updated (HTTP 200).</li>
+     *         <li>{@code If-Match} header absent → 428.</li>
+     *         <li>Version mismatch → {@link StaleVersionException} (caller returns 409).</li>
+     *         <li>EDD unchanged → no-op, return Updated (HTTP 200, version NOT bumped).</li>
+     *         <li>EDD changed → persist update, return Updated (HTTP 200).</li>
      *       </ul>
      *   </li>
      * </ol>
@@ -94,8 +99,7 @@ public class PregnancyProfileService {
      * @param ifMatch    raw {@code If-Match} header value (may be null)
      * @param clientDate civil "today" ({@code X-Client-Date} or UTC fallback)
      * @return {@link PutResult.Created} or {@link PutResult.Updated}
-     * @throws ApiException         422 validation_error (XOR, EDD window), 403 consent_required
-     * @throws ApiException         428 precondition_required (If-Match absent on update)
+     * @throws ApiException          422 validation_error, 403 consent_required, 428 precondition_required
      * @throws StaleVersionException 409 (version mismatch; caller attaches current profile body)
      */
     @Transactional
@@ -110,9 +114,6 @@ public class PregnancyProfileService {
         }
 
         // 2 — Consent gate (general_health). Currently always-granted via seam.
-        //     TODO: the real ConsentRecord check is wired here; only the stub changes.
-        //     api-contract: 403 must include details naming the consent type so the client
-        //     can surface the correct consent prompt (api-contract §consent-gating, ruling 1).
         if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
             throw new ApiException(403, "consent_required", GENERAL_HEALTH);
         }
@@ -125,9 +126,6 @@ public class PregnancyProfileService {
             eddBasis = "due_date";
         } else {
             int week = input.currentWeek();
-            // api-contract: currentWeek must be 1–42 inclusive (term = 42 completed weeks).
-            // Values outside this range are anatomically implausible and cannot be converted
-            // to a meaningful EDD, so reject with 422 before the EDD-window check.
             if (week < 1 || week > 42) {
                 throw new ApiException(422, "validation_error");
             }
@@ -143,69 +141,199 @@ public class PregnancyProfileService {
         }
 
         // 5 — Look up any existing row, including a soft-deleted tombstone.
-        //     Using findByUserId (not findByUserIdAndDeletedAtIsNull) so we can detect and
-        //     resurrect a tombstone rather than blindly inserting and hitting the UNIQUE(user_id)
-        //     constraint (which would produce a 500 DataIntegrityViolationException).
         Optional<PregnancyProfile> anyExisting = repository.findByUserId(userId);
 
         if (anyExisting.isEmpty()) {
-            // 5a — No row at all: insert new profile (OQ-5)
+            // 5a — No row at all: insert new profile
             PregnancyProfile profile = new PregnancyProfile();
             profile.setUserId(userId);
             profile.setEdd(edd);
             profile.setEddBasis(eddBasis);
-            // saveAndFlush: forces the INSERT + @Version assignment immediately so that the
-            // response includes the correct version=0. Without flush, Hibernate might not
-            // have executed the INSERT yet at response-building time (in @Transactional tests).
             PregnancyProfile saved = repository.saveAndFlush(profile);
-            GestationalAge ga = GestationalAge.compute(saved.getEdd(), clientDate, saved.getLifecycle());
-            return new PutResult.Created(PregnancyProfileResponse.of(saved, ga));
+            return new PutResult.Created(buildResponse(saved, clientDate));
         }
 
         PregnancyProfile profile = anyExisting.get();
 
         if (profile.getDeletedAt() != null) {
-            // 5b — Tombstone: resurrect the row instead of inserting a duplicate.
-            //      Reset soft-delete marker, refresh EDD, and treat the result as a creation
-            //      (HTTP 201) because from the caller's perspective the profile is new.
+            // 5b — Tombstone: resurrect the row (treat as creation for the caller)
             profile.setDeletedAt(null);
             profile.setEdd(edd);
             profile.setEddBasis(eddBasis);
             PregnancyProfile saved = repository.saveAndFlush(profile);
-            GestationalAge ga = GestationalAge.compute(saved.getEdd(), clientDate, saved.getLifecycle());
-            return new PutResult.Created(PregnancyProfileResponse.of(saved, ga));
+            return new PutResult.Created(buildResponse(saved, clientDate));
         }
 
-        // 5c — Update: If-Match is MANDATORY (OQ-5)
+        // 5c — Update: If-Match is MANDATORY
         if (ifMatch == null || ifMatch.isBlank()) {
             throw new ApiException(428, "precondition_required");
         }
 
         long clientVersion = parseIfMatch(ifMatch);
         if (clientVersion != profile.getVersion()) {
-            GestationalAge ga = GestationalAge.compute(profile.getEdd(), clientDate, profile.getLifecycle());
-            throw new StaleVersionException(PregnancyProfileResponse.of(profile, ga));
+            throw new StaleVersionException(buildResponse(profile, clientDate));
         }
 
         // No-op (OQ-9): same EDD → return unchanged record without bumping version
         if (edd.equals(profile.getEdd())) {
-            GestationalAge ga = GestationalAge.compute(profile.getEdd(), clientDate, profile.getLifecycle());
-            return new PutResult.Updated(PregnancyProfileResponse.of(profile, ga));
+            return new PutResult.Updated(buildResponse(profile, clientDate));
         }
 
-        // Real update: saveAndFlush to ensure the @Version is incremented in-memory before the
-        // response is built. Without flush the managed entity's version would still read 0
-        // even though the SQL UPDATE has queued version+1.
+        // Real update
         profile.setEdd(edd);
         profile.setEddBasis(eddBasis);
         PregnancyProfile saved = repository.saveAndFlush(profile);
-        GestationalAge ga = GestationalAge.compute(saved.getEdd(), clientDate, saved.getLifecycle());
-        return new PutResult.Updated(PregnancyProfileResponse.of(saved, ga));
+        return new PutResult.Updated(buildResponse(saved, clientDate));
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /pregnancy-profile/birth-event
+    // -------------------------------------------------------------------------
+
+    /**
+     * Records a birth event, transitioning {@code lifecycle: pregnant → postpartum}.
+     *
+     * <p>Preconditions, in order:
+     * <ol>
+     *   <li>Profile must exist (live, non-deleted) — {@code 404 not_found} if absent.</li>
+     *   <li>{@code lifecycle == "ended"} — {@code 409 invalid_lifecycle_state (details:"ended")}.</li>
+     *   <li>Consent gate: {@code general_health} must be granted — {@code 403 consent_required}.</li>
+     *   <li>{@code If-Match} header — absent → {@code 428}; stale version → {@code 409} with
+     *       the current authoritative profile in the body.</li>
+     *   <li>Birth-date bounds (application-layer, non-judgmental typo-guards — OQ-10):
+     *       <ul>
+     *         <li>{@code birthDate ≤ clientDate} (no future birth)</li>
+     *         <li>{@code birthDate ≥ edd − 126 days} (sanity floor ≈ 22 wk gestation)</li>
+     *       </ul>
+     *       Violation → {@code 422 validation_error}.
+     *   </li>
+     * </ol>
+     *
+     * <p>Post-condition when already {@code postpartum} (OQ-12/PP6 idempotency):
+     * <ul>
+     *   <li>{@code birthDate} equals stored {@code birthDate} → <strong>no-op</strong>:
+     *       return the current record with {@code version} NOT bumped.</li>
+     *   <li>{@code birthDate} differs → <strong>correction</strong>: update and bump
+     *       {@code version} → {@code 200}. (OQ-13/PP1)</li>
+     * </ul>
+     *
+     * <p><strong>deliveryType / birthNote TODO (security-compliance):</strong> These fields are
+     * stored as plaintext {@code varchar}/{@code text} for the test phase. The api-contract marks
+     * them "client-encrypted {@code bytea}" — encryption is deferred to the security-compliance
+     * phase. The no-op equality check already compares {@code birthDate} ONLY (not the cipher
+     * fields) per OQ-12/PP6, so the deferred encryption does not break the idempotency rule.
+     *
+     * @param userId     authenticated user id
+     * @param input      request body ({@code birthDate} required; {@code deliveryType/birthNote} optional)
+     * @param ifMatch    raw {@code If-Match} header value (may be null)
+     * @param clientDate civil "today" ({@code X-Client-Date} or UTC fallback)
+     * @return the updated/current profile as a postpartum response snapshot
+     * @throws ApiException          404, 409 (lifecycle/state), 403, 428, 422
+     * @throws StaleVersionException 409 (version mismatch; caller attaches current profile body)
+     */
+    @Transactional
+    public PregnancyProfileResponse recordBirthEvent(UUID userId, BirthEventInput input,
+                                                     String ifMatch, LocalDate clientDate) {
+
+        // 1 — Profile must exist
+        PregnancyProfile profile = requireProfile(userId);
+
+        // 2 — lifecycle == "ended" is a terminal state (OQ-PP7 — write path deferred)
+        if ("ended".equals(profile.getLifecycle())) {
+            throw new ApiException(409, "invalid_lifecycle_state", "ended");
+        }
+
+        // 3 — Consent gate (general_health — same gate as PUT /pregnancy-profile)
+        if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
+            throw new ApiException(403, "consent_required", GENERAL_HEALTH);
+        }
+
+        // 4 — If-Match required (B2: mandatory on all direct-REST mutations to existing rows)
+        if (ifMatch == null || ifMatch.isBlank()) {
+            throw new ApiException(428, "precondition_required");
+        }
+        long clientVersion = parseIfMatch(ifMatch);
+        if (clientVersion != profile.getVersion()) {
+            throw new StaleVersionException(buildResponse(profile, clientDate));
+        }
+
+        // 5 — Validate birthDate (required field)
+        LocalDate birthDate = (input != null) ? input.birthDate() : null;
+        if (birthDate == null) {
+            throw new ApiException(422, "validation_error");
+        }
+        // 5a — No future birth: birthDate ≤ clientDate(today)
+        if (birthDate.isAfter(clientDate)) {
+            throw new ApiException(422, "validation_error");
+        }
+        // 5b — Sanity floor: birthDate ≥ edd − 126 days (≈ 22 wk gestation — OQ-10)
+        if (birthDate.isBefore(profile.getEdd().minusDays(126))) {
+            throw new ApiException(422, "validation_error");
+        }
+
+        // 6 — Already postpartum: content-level idempotency (OQ-12/PP6)
+        if ("postpartum".equals(profile.getLifecycle())) {
+            if (birthDate.equals(profile.getBirthDate())) {
+                // Exact same birthDate → true no-op: return current record, version NOT bumped.
+                // No-op equality compares birthDate ONLY — never deliveryType/birthNote (those
+                // are client-encrypted with a random IV in the production path, so byte-equality
+                // would false-negative; see OQ-12 note in api-contract).
+                PostpartumAge pa = PostpartumAge.compute(profile.getBirthDate(), clientDate);
+                return PregnancyProfileResponse.of(profile, pa);
+            }
+            // Different birthDate: typo correction (OQ-13/PP1) — update and bump version
+            profile.setBirthDate(birthDate);
+            applyOptionalFields(profile, input);
+            PregnancyProfile saved = repository.saveAndFlush(profile);
+            PostpartumAge pa = PostpartumAge.compute(saved.getBirthDate(), clientDate);
+            return PregnancyProfileResponse.of(saved, pa);
+        }
+
+        // 7 — pregnant → postpartum transition (the primary path)
+        profile.setLifecycle("postpartum");
+        profile.setBirthDate(birthDate);
+        applyOptionalFields(profile, input);
+        PregnancyProfile saved = repository.saveAndFlush(profile);
+        PostpartumAge pa = PostpartumAge.compute(saved.getBirthDate(), clientDate);
+        return PregnancyProfileResponse.of(saved, pa);
     }
 
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Builds the appropriate response DTO based on the profile's current lifecycle.
+     * Returns a gestational-age snapshot when pregnant, a postpartum snapshot when postpartum.
+     */
+    private PregnancyProfileResponse buildResponse(PregnancyProfile profile, LocalDate clientDate) {
+        if ("postpartum".equals(profile.getLifecycle())) {
+            PostpartumAge pa = PostpartumAge.compute(profile.getBirthDate(), clientDate);
+            return PregnancyProfileResponse.of(profile, pa);
+        }
+        GestationalAge ga = GestationalAge.compute(profile.getEdd(), clientDate, profile.getLifecycle());
+        return PregnancyProfileResponse.of(profile, ga);
+    }
+
+    /**
+     * Applies optional {@code deliveryType} and {@code birthNote} fields when present.
+     *
+     * <p>Only writes the field when the request carries a non-null value. A same-birthDate
+     * no-op re-send does not reach this method (returns early before), so this is only called
+     * on the initial transition and on birthDate-changing corrections.
+     *
+     * <p>TODO security-compliance: replace with encrypted-bytea write when field-level
+     * encryption ships (see {@link com.momstarter.pregnancy.dto.BirthEventInput} TODO block).
+     */
+    private static void applyOptionalFields(PregnancyProfile profile, BirthEventInput input) {
+        if (input == null) return;
+        if (input.deliveryType() != null) {
+            profile.setDeliveryType(input.deliveryType());
+        }
+        if (input.birthNote() != null) {
+            profile.setBirthNote(input.birthNote());
+        }
+    }
 
     private PregnancyProfile requireProfile(UUID userId) {
         return repository.findByUserIdAndDeletedAtIsNull(userId)
@@ -216,14 +344,9 @@ public class PregnancyProfileService {
      * Parses the raw {@code If-Match} header value. HTTP ETag convention wraps the value in
      * double quotes (e.g. {@code "0"}), so we strip them before parsing.
      *
-     * <p>Error semantics (api-contract §412/428):
      * <ul>
-     *   <li>Header <strong>absent</strong> (null/blank) → caller throws {@code 428 precondition_required}
-     *       before reaching this method.</li>
-     *   <li>Header <strong>present but unparseable</strong> (e.g. {@code "abc"}, {@code *})
-     *       → {@code 412 precondition_failed}: the client sent a value but it is not a valid
-     *       version token. 428 would be semantically wrong ("precondition absent") for a
-     *       header that was actually provided.</li>
+     *   <li>Header absent (null/blank) → caller throws {@code 428} before reaching here.</li>
+     *   <li>Header present but unparseable (e.g. {@code "abc"}) → {@code 412 precondition_failed}.</li>
      * </ul>
      */
     private static long parseIfMatch(String ifMatch) {
