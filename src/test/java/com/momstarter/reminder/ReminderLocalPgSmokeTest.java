@@ -8,6 +8,7 @@ import com.momstarter.auth.JwtService;
 import com.momstarter.pregnancy.ConsentChecker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -18,6 +19,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -61,7 +64,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>{@code @Transactional} rolls back every test method's writes.  {@code @BeforeEach}
  * does NOT call {@code deleteAll()} to avoid FK-ordering issues on real PostgreSQL;
  * instead each test creates a unique user UUID, so data from other tests / runs is invisible.
+ *
+ * <h3>Guard — no PG = SKIP, not ERROR</h3>
+ * <p>{@code @EnabledIf("pgReachable")} causes JUnit 5 to evaluate {@link #pgReachable()}
+ * as an {@code ExecutionCondition} before {@code SpringExtension.beforeAll()} attempts to
+ * load the ApplicationContext.  When {@code localhost:5432} is unreachable the entire class
+ * is marked DISABLED (skipped), so {@code mvn test} stays green on a clean checkout with
+ * no Docker container running.
  */
+@EnabledIf("pgReachable")
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
@@ -85,6 +96,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 })
 @Transactional
 class ReminderLocalPgSmokeTest {
+
+    /**
+     * Probed by {@code @EnabledIf("pgReachable")} before Spring loads the ApplicationContext.
+     * Attempts a TCP connect to {@code localhost:5432} with a 1.5-second timeout.
+     * Returns {@code true} when PostgreSQL is reachable; {@code false} otherwise (container
+     * absent or port closed), causing JUnit to mark the entire class as SKIPPED.
+     */
+    static boolean pgReachable() {
+        try (Socket s = new Socket()) {
+            s.connect(new InetSocketAddress("localhost", 5432), 1500);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     @Autowired private MockMvc mvc;
     @Autowired private UserRepository users;
