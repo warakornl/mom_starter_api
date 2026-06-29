@@ -50,11 +50,16 @@ public class RegistrationService {
         passwordPolicy.validate(req.password());
 
         String email = normaliseEmail(req.email());
+        // Hash on EVERY path so the bcrypt cost (the dominant timing term) is paid whether or not
+        // the email already exists — otherwise response time leaks existence (§E). The hash is only
+        // persisted for a genuinely new account.
+        String passwordHash = encoder.encode(req.password());
+
         Optional<User> existing = users.findByEmail(email);
         if (existing.isEmpty()) {
             User user = new User();
             user.setEmail(email);
-            user.setPasswordHash(encoder.encode(req.password()));
+            user.setPasswordHash(passwordHash);
             user.setLocale(req.locale());
             user.setEmailVerified(false);
             users.save(user);
