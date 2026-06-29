@@ -11,3 +11,11 @@ spring:
       ddl-auto: none
   flyway:
     enabled: false
+
+# Effectively disable rate limiting in the test profile so MVC tests don't trip the
+# shared in-memory limiter; the limiter itself is unit-tested in RateLimiterTest.
+momstarter:
+  ratelimit:
+    login-per-ip-per-min: 1000000
+    register-per-ip-per-min: 1000000
+    resend-per-ip-per-min: 1000000

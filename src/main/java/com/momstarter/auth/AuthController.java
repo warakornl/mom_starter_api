@@ -38,8 +38,9 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public ResponseEntity<Map<String, String>> register(@Valid @RequestBody RegisterRequest request) {
-        registrationService.register(request);
+    public ResponseEntity<Map<String, String>> register(@Valid @RequestBody RegisterRequest request,
+                                                        HttpServletRequest httpRequest) {
+        registrationService.register(request, httpRequest.getRemoteAddr());
         return ResponseEntity.accepted().body(Map.of("code", "verification_pending"));
     }
 
@@ -49,8 +50,9 @@ public class AuthController {
     }
 
     @PostMapping("/resend-verification")
-    public ResponseEntity<Map<String, String>> resendVerification(@Valid @RequestBody ResendVerificationRequest request) {
-        registrationService.resendVerification(request.email());
+    public ResponseEntity<Map<String, String>> resendVerification(@Valid @RequestBody ResendVerificationRequest request,
+                                                                 HttpServletRequest httpRequest) {
+        registrationService.resendVerification(request.email(), httpRequest.getRemoteAddr());
         return ResponseEntity.accepted().body(Map.of("code", "verification_pending"));
     }
 

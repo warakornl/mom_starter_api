@@ -6,9 +6,11 @@ import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.RegisterRequest;
 import com.momstarter.auth.dto.VerifyEmailRequest;
 import com.momstarter.error.ApiException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -29,6 +31,9 @@ public class RegistrationService {
     private final VerificationEmailSender emailSender;
     private final JwtService jwt;
     private final RefreshTokenService refreshTokens;
+    private final RateLimiter rateLimiter;
+    private final int registerMaxPerIpPerMin;
+    private final int resendMaxPerIpPerMin;
 
     public RegistrationService(UserRepository users,
                                PasswordEncoder encoder,
@@ -36,7 +41,10 @@ public class RegistrationService {
                                EmailVerificationService emailVerification,
                                VerificationEmailSender emailSender,
                                JwtService jwt,
-                               RefreshTokenService refreshTokens) {
+                               RefreshTokenService refreshTokens,
+                               RateLimiter rateLimiter,
+                               @Value("${momstarter.ratelimit.register-per-ip-per-min:15}") int registerMaxPerIpPerMin,
+                               @Value("${momstarter.ratelimit.resend-per-ip-per-min:10}") int resendMaxPerIpPerMin) {
         this.users = users;
         this.encoder = encoder;
         this.passwordPolicy = passwordPolicy;
@@ -44,9 +52,15 @@ public class RegistrationService {
         this.emailSender = emailSender;
         this.jwt = jwt;
         this.refreshTokens = refreshTokens;
+        this.rateLimiter = rateLimiter;
+        this.registerMaxPerIpPerMin = registerMaxPerIpPerMin;
+        this.resendMaxPerIpPerMin = resendMaxPerIpPerMin;
     }
 
-    public void register(RegisterRequest req) {
+    public void register(RegisterRequest req, String clientIp) {
+        // per-IP throttle — also caps the bcrypt/Argon2 cost now paid on every path (anti-DoS)
+        rateLimiter.check("register-ip:" + clientIp, registerMaxPerIpPerMin, Duration.ofMinutes(1));
+
         passwordPolicy.validate(req.password());
 
         String email = normaliseEmail(req.email());
@@ -72,7 +86,9 @@ public class RegistrationService {
 
     /** Re-send the verification email. Always a no-op-or-send that the caller answers with 202 —
      *  never reveals whether the email exists or is already verified (§E/§H). */
-    public void resendVerification(String email) {
+    public void resendVerification(String email, String clientIp) {
+        rateLimiter.check("resend-ip:" + clientIp, resendMaxPerIpPerMin, Duration.ofMinutes(1));
+
         String normalised = normaliseEmail(email);
         users.findByEmail(normalised).ifPresent(user -> {
             if (!user.isEmailVerified()) {

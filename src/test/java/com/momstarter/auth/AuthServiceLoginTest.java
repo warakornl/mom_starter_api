@@ -23,6 +23,11 @@ import java.time.Clock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.startsWith;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -39,6 +44,7 @@ class AuthServiceLoginTest {
     private PasswordEncoder encoder;
     private LoginAttemptService loginAttempts;
     private JwtDecoder decoder;
+    private RateLimiter rateLimiter;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -50,7 +56,8 @@ class AuthServiceLoginTest {
         Clock clock = Clock.systemUTC();
         RefreshTokenService refreshTokens = new RefreshTokenService(tokens, clock);
         loginAttempts = new LoginAttemptService(clock);
-        auth = new AuthService(users, encoder, jwt, refreshTokens, loginAttempts);
+        rateLimiter = mock(RateLimiter.class); // no-op by default; one test stubs it to throw
+        auth = new AuthService(users, encoder, jwt, refreshTokens, loginAttempts, rateLimiter, 1_000_000);
     }
 
     private User seedUser(String email, String rawPassword, boolean verified) {
@@ -111,6 +118,17 @@ class AuthServiceLoginTest {
         assertThatThrownBy(() -> auth.login(new LoginRequest("mom@example.com", "correcthorsebattery", "d"), "ip"))
                 .isInstanceOf(ApiException.class)
                 .extracting("code").isEqualTo("account_locked");
+    }
+
+    @Test
+    void login_isThrottledPerIp() {
+        seedUser("mom@example.com", "correcthorsebattery", true);
+        doThrow(new ApiException(429, "rate_limited"))
+                .when(rateLimiter).check(startsWith("login-ip:"), anyInt(), any());
+
+        assertThatThrownBy(() -> auth.login(new LoginRequest("mom@example.com", "correcthorsebattery", "d"), "9.9.9.9"))
+                .isInstanceOf(ApiException.class)
+                .extracting("code").isEqualTo("rate_limited");
     }
 
     @Test

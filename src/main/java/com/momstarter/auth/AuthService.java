@@ -7,9 +7,11 @@ import com.momstarter.auth.dto.LoginRequest;
 import com.momstarter.auth.dto.LogoutRequest;
 import com.momstarter.auth.dto.RefreshRequest;
 import com.momstarter.error.ApiException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -27,24 +29,33 @@ public class AuthService {
     private final JwtService jwt;
     private final RefreshTokenService refreshTokens;
     private final LoginAttemptService loginAttempts;
+    private final RateLimiter rateLimiter;
+    private final int loginMaxPerIpPerMin;
 
-    /** A real bcrypt hash compared against when the account is absent (constant-time defence). */
+    /** A real password hash compared against when the account is absent (constant-time defence). */
     private final String dummyHash;
 
     public AuthService(UserRepository users,
                        PasswordEncoder encoder,
                        JwtService jwt,
                        RefreshTokenService refreshTokens,
-                       LoginAttemptService loginAttempts) {
+                       LoginAttemptService loginAttempts,
+                       RateLimiter rateLimiter,
+                       @Value("${momstarter.ratelimit.login-per-ip-per-min:20}") int loginMaxPerIpPerMin) {
         this.users = users;
         this.encoder = encoder;
         this.jwt = jwt;
         this.refreshTokens = refreshTokens;
         this.loginAttempts = loginAttempts;
+        this.rateLimiter = rateLimiter;
+        this.loginMaxPerIpPerMin = loginMaxPerIpPerMin;
         this.dummyHash = encoder.encode("dummy-" + UUID.randomUUID());
     }
 
     public AuthTokens login(LoginRequest req, String clientIp) {
+        // per-IP throttle (credential-stuffing / spraying defence, §4B.1) — before any work
+        rateLimiter.check("login-ip:" + clientIp, loginMaxPerIpPerMin, Duration.ofMinutes(1));
+
         String email = normaliseEmail(req.email());
 
         if (loginAttempts.isLocked(email)) {

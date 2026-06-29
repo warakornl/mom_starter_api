@@ -13,3 +13,11 @@ spring:
     open-in-view: false
   flyway:
     enabled: true
+
+# Per-IP rate limits (requests / minute). Conservative MVP values — tighten + back with a
+# shared store / edge WAF for production (see docs/architecture/infrastructure-diagram.md).
+momstarter:
+  ratelimit:
+    login-per-ip-per-min: 20
+    register-per-ip-per-min: 15
+    resend-per-ip-per-min: 10
