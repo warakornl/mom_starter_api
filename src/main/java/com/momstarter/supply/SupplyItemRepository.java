@@ -2,6 +2,7 @@ package com.momstarter.supply;
 
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -30,6 +31,27 @@ import java.util.UUID;
  * </ol>
  */
 public interface SupplyItemRepository extends JpaRepository<SupplyItem, UUID> {
+
+    // -------------------------------------------------------------------------
+    // Push path — version initialisation (contract §5 pin: version:=1 on INSERT)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Atomically bumps the {@code version} column from {@code 0} to {@code 1} for a newly
+     * INSERTed entity whose Hibernate {@code @Version} seed is {@code 0}.
+     *
+     * <p>Called immediately after {@code saveAndFlush()} on a fresh INSERT so that the
+     * wire-visible {@code version} in {@code applied[]} and the DB-stored version are both
+     * {@code 1}, satisfying api-contract §5: "genuine create → server sets {@code version:=1}".
+     *
+     * <p>{@code clearAutomatically = true} evicts the L1 cache so subsequent loads within the
+     * same transaction see the updated value (relevant for same-id multi-bucket push, §1).
+     *
+     * @param id the id of the just-inserted supply item
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE SupplyItem s SET s.version = 1 WHERE s.id = :id AND s.version = 0")
+    void initVersionToOne(@Param("id") UUID id);
 
     // -------------------------------------------------------------------------
     // Push path — version check + batch ID lookup

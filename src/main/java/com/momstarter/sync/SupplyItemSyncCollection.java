@@ -158,11 +158,13 @@ class SupplyItemSyncCollection implements SyncCollection {
         item.setUserId(userId);
         applyFields(item, record, name, category);
         try {
-            item = repository.saveAndFlush(item);
+            item = repository.saveAndFlush(item); // Hibernate @Version seeds to 0 on INSERT
+            // Contract §5 pin: genuine create → version:=1 (not 0).
+            // initVersionToOne issues a JPQL UPDATE within the same transaction and clears the
+            // L1 cache, so the DB and wire-visible applied[].version are both 1.
+            repository.initVersionToOne(item.getId());
             return new SyncApplyResult.Success(
-                    new Applied(COLLECTION, item.getId(),
-                            item.getVersion() != null ? item.getVersion() : 0L,
-                            item.getUpdatedAt()));
+                    new Applied(COLLECTION, item.getId(), 1L, item.getUpdatedAt()));
         } catch (Exception ex) {
             // Race condition or UUID already taken (by this user or another).
             // Try to reload for the current user first (this-user concurrent insert).
@@ -222,16 +224,16 @@ class SupplyItemSyncCollection implements SyncCollection {
 
         if (item == null) {
             // Never-seen id → insert tombstone skeleton (OQ-SYNC-10)
+            // Contract §5 pin: skeleton version:=1 (same as genuine create)
             SupplyItem skeleton = new SupplyItem();
             skeleton.setId(id);
             skeleton.setUserId(userId);
             skeleton.setName("");        // placeholder (NOT NULL satisfied)
             skeleton.setCategory("other");
             skeleton.setDeletedAt(Instant.now());
-            skeleton = repository.saveAndFlush(skeleton);
-            return new Applied(COLLECTION, id,
-                    skeleton.getVersion() != null ? skeleton.getVersion() : 0L,
-                    skeleton.getUpdatedAt());
+            skeleton = repository.saveAndFlush(skeleton); // Hibernate @Version seeds to 0
+            repository.initVersionToOne(skeleton.getId()); // DB: version 0 → 1; L1 cache cleared
+            return new Applied(COLLECTION, id, 1L, skeleton.getUpdatedAt());
         }
 
         if (item.getDeletedAt() != null) {
