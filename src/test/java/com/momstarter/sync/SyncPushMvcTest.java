@@ -111,6 +111,23 @@ class SyncPushMvcTest {
     }
 
     // -------------------------------------------------------------------------
+    // 403 — email_unverified (evaluated BEFORE consent gate, §G / api-contract egress precondition)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_emailUnverified_returns403EmailUnverified() throws Exception {
+        // JWT with email_verified=false — must be rejected before the consent check
+        String unverifiedBearer = jwtService.issueAccessToken(userId, false);
+        String body = buildPushBody(Map.of());
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + unverifiedBearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("email_unverified"));
+    }
+
+    // -------------------------------------------------------------------------
     // 400 — malformed request
     // -------------------------------------------------------------------------
 
@@ -118,6 +135,19 @@ class SyncPushMvcTest {
     void push_missingLastPulledAt_returns400() throws Exception {
         String body = """
                 { "changes": {} }
+                """;
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void push_missingChanges_returns400() throws Exception {
+        // contract §8: missing changes is structurally malformed → 400 (not 422)
+        String body = """
+                { "lastPulledAt": "0" }
                 """;
         mvc.perform(post("/sync/push")
                         .header("Authorization", "Bearer " + bearer)
@@ -200,7 +230,8 @@ class SyncPushMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.applied[0].collection").value("supplyItems"))
                 .andExpect(jsonPath("$.applied[0].id").value(recordId.toString()))
-                .andExpect(jsonPath("$.applied[0].version").exists())
+                // contract §5 pin: genuine create → server sets version:=1 (not 0)
+                .andExpect(jsonPath("$.applied[0].version").value(1))
                 .andExpect(jsonPath("$.applied[0].updatedAt").exists())
                 .andExpect(jsonPath("$.conflicts").isEmpty())
                 .andExpect(jsonPath("$.rejected").isEmpty())
@@ -211,6 +242,8 @@ class SyncPushMvcTest {
         assertThat(saved.getUserId()).isEqualTo(userId);
         assertThat(saved.getName()).isEqualTo("Diapers NB");
         assertThat(saved.getCategory()).isEqualTo("diapers");
+        // DB version must also be 1 (not 0) so subsequent push conflict detection is correct
+        assertThat(saved.getVersion()).isEqualTo(1L);
     }
 
     // -------------------------------------------------------------------------
@@ -316,6 +349,35 @@ class SyncPushMvcTest {
 
         SupplyItem tombstoned = items.findById(recordId).orElseThrow();
         assertThat(tombstoned.getDeletedAt()).isNotNull();
+    }
+
+    @Test
+    void push_deleteNeverSeenId_createsTombstoneSkeletonAtVersionOne() throws Exception {
+        // Never-seen id: server inserts skeleton; contract §5 pin: version:=1 on skeleton INSERT
+        UUID neverSeenId = UUID.randomUUID();
+
+        String body = objectMapper.writeValueAsString(Map.of(
+                "changes", Map.of(
+                        "supplyItems", Map.of(
+                                "created", List.of(),
+                                "updated", List.of(),
+                                "deleted", List.of(neverSeenId.toString())
+                        )
+                ),
+                "lastPulledAt", "0"
+        ));
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].id").value(neverSeenId.toString()))
+                .andExpect(jsonPath("$.applied[0].version").value(1));
+
+        SupplyItem skeleton = items.findById(neverSeenId).orElseThrow();
+        assertThat(skeleton.getDeletedAt()).isNotNull();
+        assertThat(skeleton.getVersion()).isEqualTo(1L);
     }
 
     @Test
@@ -546,6 +608,76 @@ class SyncPushMvcTest {
         SupplyItem untouched = items.findById(otherItemId).orElseThrow();
         assertThat(untouched.getUserId()).isEqualTo(other.getId());
         assertThat(untouched.getName()).isEqualTo("Other's Diapers");
+    }
+
+    // -------------------------------------------------------------------------
+    // Same-id across multiple buckets (contract §1: apply-order created→updated→deleted,
+    // deleted wins; applied[] has 1 entry per id, not one per bucket)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_sameId_createdAndDeleted_tombstoneWins_oneAppliedEntry() throws Exception {
+        UUID id = UUID.randomUUID();
+        // Same id in created AND deleted — deleted wins (tombstone-wins); no PK crash
+        String body = objectMapper.writeValueAsString(Map.of(
+                "changes", Map.of(
+                        "supplyItems", Map.of(
+                                "created", List.of(buildSupplyRecord(id, 0L, "Transient Item", "other")),
+                                "updated", List.of(),
+                                "deleted", List.of(id.toString())
+                        )
+                ),
+                "lastPulledAt", "0"
+        ));
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                // exactly 1 applied entry for the id (not two)
+                .andExpect(jsonPath("$.applied.length()").value(1))
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.conflicts").isEmpty())
+                .andExpect(jsonPath("$.rejected").isEmpty());
+
+        // Final state must be tombstoned
+        SupplyItem result = items.findById(id).orElseThrow();
+        assertThat(result.getDeletedAt()).isNotNull();
+    }
+
+    @Test
+    void push_sameId_createdAndUpdated_noPkCrash_oneAppliedEntry() throws Exception {
+        UUID id = UUID.randomUUID();
+        // Same id in created AND updated — no PK crash, exactly 1 applied[] entry.
+        // Behavior: created[X] INSERTs X (version:=1); updated[X] with base=0 sees
+        // currentVersion=1 → server_won (base≠current). Applied[] carries the create result;
+        // the update's server_won appears in conflicts[]. This is correct LWW behavior —
+        // the client should re-push the update with base=1 after reading the applied[] entry.
+        String body = objectMapper.writeValueAsString(Map.of(
+                "changes", Map.of(
+                        "supplyItems", Map.of(
+                                "created", List.of(buildSupplyRecord(id, 0L, "Initial Name", "other")),
+                                "updated", List.of(buildSupplyRecord(id, 0L, "Updated Name", "diapers")),
+                                "deleted", List.of()
+                        )
+                ),
+                "lastPulledAt", "0"
+        ));
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                // Exactly 1 applied entry for the id (from created bucket — no duplicate for updated)
+                .andExpect(jsonPath("$.applied.length()").value(1))
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                // No crash means no 500; server_won conflict for update is expected
+                .andExpect(jsonPath("$.rejected").isEmpty());
+
+        // Row exists (the create landed) — no PK exception, no 500
+        assertThat(items.findById(id)).isPresent();
     }
 
     // -------------------------------------------------------------------------

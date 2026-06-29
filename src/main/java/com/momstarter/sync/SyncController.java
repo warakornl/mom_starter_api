@@ -1,5 +1,6 @@
 package com.momstarter.sync;
 
+import com.momstarter.auth.EmailVerifiedGuard;
 import com.momstarter.sync.dto.SyncPullResponse;
 import com.momstarter.sync.dto.SyncPushRequest;
 import com.momstarter.sync.dto.SyncPushResponse;
@@ -29,15 +30,25 @@ import java.util.UUID;
  * Authorization: userId from {@code jwt.getSubject()} — never trusted from the request body.
  *
  * <p>PDPA / no-PII-in-logs: userId is never logged at INFO or below.
+ *
+ * <p>Egress precondition (§G): {@link EmailVerifiedGuard#requireVerified(Jwt)} is evaluated
+ * <strong>before</strong> the {@code cloud_storage} consent gate on every cloud-egress endpoint.
+ *
+ * <p>TODO 🟡-7: byte-cap backstop — add {@code server.tomcat.max-swallow-size} /
+ * {@code server.tomcat.max-http-form-post-size} in application.properties to enforce the 5 MB
+ * decoded payload cap at the Tomcat layer (defense-in-depth alongside the service-level check).
+ * Also consider adding a {@code Content-Length} validation filter before deserialization.
  */
 @RestController
 @RequestMapping("/sync")
 class SyncController {
 
     private final SyncService syncService;
+    private final EmailVerifiedGuard emailVerifiedGuard;
 
-    SyncController(SyncService syncService) {
+    SyncController(SyncService syncService, EmailVerifiedGuard emailVerifiedGuard) {
         this.syncService = syncService;
+        this.emailVerifiedGuard = emailVerifiedGuard;
     }
 
     /**
@@ -66,6 +77,8 @@ class SyncController {
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestHeader(value = "Content-Length", required = false, defaultValue = "-1") long contentLength
     ) {
+        // Egress precondition §G: email_verified FIRST, then consent gate in service
+        emailVerifiedGuard.requireVerified(jwt);
         UUID userId = UUID.fromString(jwt.getSubject());
         SyncPushResponse response = syncService.push(userId, request, idempotencyKey, contentLength);
         return ResponseEntity.ok(response);
@@ -98,6 +111,8 @@ class SyncController {
             @RequestParam(required = false) Integer limit,
             @RequestParam(required = false) Integer safeWindow
     ) {
+        // Egress precondition §G: email_verified FIRST, then consent gate in service
+        emailVerifiedGuard.requireVerified(jwt);
         UUID userId = UUID.fromString(jwt.getSubject());
         SyncPullResponse response = syncService.pull(userId, since, safeWindow, cursor, limit);
         return ResponseEntity.ok(response);

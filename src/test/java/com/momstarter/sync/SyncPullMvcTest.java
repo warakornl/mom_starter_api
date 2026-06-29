@@ -108,6 +108,20 @@ class SyncPullMvcTest {
     }
 
     // -------------------------------------------------------------------------
+    // 403 — email_unverified (evaluated BEFORE consent gate, §G / api-contract egress precondition)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void pull_emailUnverified_returns403EmailUnverified() throws Exception {
+        // JWT with email_verified=false — must be rejected before the consent check
+        String unverifiedBearer = jwtService.issueAccessToken(userId, false);
+        mvc.perform(get("/sync/pull")
+                        .header("Authorization", "Bearer " + unverifiedBearer))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("email_unverified"));
+    }
+
+    // -------------------------------------------------------------------------
     // 403 — cloud_storage consent denied
     // -------------------------------------------------------------------------
 
@@ -351,6 +365,46 @@ class SyncPullMvcTest {
             assertThat(node.get("userId").asText()).isEqualTo(userId.toString());
             assertThat(node.get("name").asText()).isNotEqualTo("Other User's Item");
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // cursor.since is used (not the query param) — §9 pinned since across drain
+    // -------------------------------------------------------------------------
+
+    @Test
+    void pull_cursorPresent_usesCursorSinceNotParam() throws Exception {
+        // Save two items: one "old" and one "new"
+        SupplyItem old = savedItem("Old Item", "other");
+        Thread.sleep(10);
+        SupplyItem newer = savedItem("New Item", "diapers");
+
+        // First batch: since=EPOCH (cold start), limit=1 → gets old item, returns cursor
+        MvcResult firstPage = mvc.perform(get("/sync/pull")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        var firstBody = objectMapper.readTree(firstPage.getResponse().getContentAsString());
+        String cursor = firstBody.get("nextCursor").asText();
+
+        // Second batch with cursor (cursor.since=EPOCH from first request) + param since=far-future
+        // The far-future since would exclude ALL items if used; cursor.since (EPOCH) must win.
+        String farFuture = Instant.now().plus(365, ChronoUnit.DAYS).toString();
+        MvcResult secondPage = mvc.perform(get("/sync/pull")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("limit", "1")
+                        .param("cursor", cursor)
+                        .param("since", farFuture))  // conflicting param — must be ignored
+                .andExpect(status().isOk())
+                .andReturn();
+
+        var secondBody = objectMapper.readTree(secondPage.getResponse().getContentAsString());
+        // Must return the second item (because cursor.since=EPOCH, not farFuture)
+        var updated = secondBody.at("/changes/supplyItems/updated");
+        assertThat(updated.isArray()).isTrue();
+        assertThat(updated.size()).isGreaterThan(0);
+        assertThat(updated.get(0).get("name").asText()).isEqualTo("New Item");
     }
 
     // -------------------------------------------------------------------------
