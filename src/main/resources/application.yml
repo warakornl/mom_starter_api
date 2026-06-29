@@ -1,5 +1,8 @@
 # Default / production profile. No secrets hardcoded — everything comes from env
 # (Secrets Manager in prod, per docs/architecture/infrastructure-diagram.md).
+server:
+  servlet:
+    context-path: /v1   # API base path /v1 (URI versioning) per docs/api-spec/api-contract.md
 spring:
   application:
     name: mom-starter-api
