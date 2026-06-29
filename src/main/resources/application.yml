@@ -21,3 +21,8 @@ momstarter:
     login-per-ip-per-min: 20
     register-per-ip-per-min: 15
     resend-per-ip-per-min: 10
+
+# Google sign-in (§J). client-id empty by default -> Google sign-in disabled until configured.
+google:
+  client-id: ${GOOGLE_CLIENT_ID:}
+  jwks-uri: https://www.googleapis.com/oauth2/v3/certs
