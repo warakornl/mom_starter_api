@@ -7,6 +7,8 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -92,11 +94,22 @@ public class Reminder {
     private UUID sourceRefId;
 
     /**
-     * FLAG-4 recurrence grammar stored as JSON (jsonb in PostgreSQL, text in H2 tests).
+     * FLAG-4 recurrence grammar stored as JSON (jsonb in PostgreSQL).
      * Validated on {@code sync/push} (422) against the grammar schema.
      * Fields: {@code freq} ({@code one_off|daily|every_n_days}), {@code interval?},
      * {@code timesOfDay[]?}, {@code until?}.
+     *
+     * <p>{@code @JdbcTypeCode(SqlTypes.JSON)} instructs Hibernate 6 to bind this field
+     * using the JSON JDBC type rather than {@code character varying}. Without this
+     * annotation PostgreSQL rejects the INSERT/UPDATE with:
+     * <pre>ERROR: column "recurrence_rule" is of type jsonb but expression is of type
+     *        character varying</pre>
+     * H2 in PostgreSQL MODE is lenient and accepts plain varchar into a jsonb column,
+     * so tests pass on H2 but fail on real PostgreSQL — the classic persistence-drift
+     * BLOCKER-1 pattern. This annotation is profile-independent and requires no
+     * {@code ?stringtype=unspecified} in the JDBC URL.
      */
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "recurrence_rule", nullable = false)
     private String recurrenceRule;
 
