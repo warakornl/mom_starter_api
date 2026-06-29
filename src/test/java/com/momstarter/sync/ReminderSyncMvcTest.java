@@ -491,6 +491,40 @@ class ReminderSyncMvcTest {
         assertThat(updated.size()).isGreaterThan(0);
     }
 
+    // -------------------------------------------------------------------------
+    // Round-trip: push object → pull → recurrenceRule must be a JSON object
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_then_pull_roundtrip_recurrenceRuleIsObject() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "daily",
+                "timesOfDay", List.of("08:00", "20:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Round-trip daily",
+                "medication", rule, "2026-07-01T08:00");
+
+        // 1. Push — must be applied (not rejected)
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.rejected").isEmpty());
+
+        // 2. Pull — recurrenceRule MUST arrive as a nested JSON object, not a string
+        mvc.perform(get("/sync/pull")
+                        .header("Authorization", "Bearer " + bearer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.freq")
+                        .value("daily"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.timesOfDay[0]")
+                        .value("08:00"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.timesOfDay[1]")
+                        .value("20:00"));
+    }
+
     // =========================================================================
     // Helpers
     // =========================================================================
@@ -503,7 +537,7 @@ class ReminderSyncMvcTest {
         r.put("version", version);
         r.put("displayTitle", displayTitle);
         r.put("type", type);
-        r.put("recurrenceRule", objectMapper.valueToTree(rule).toString());
+        r.put("recurrenceRule", rule);
         r.put("startAt", startAt);
         r.put("active", true);
         r.put("clientId", UUID.randomUUID().toString());
