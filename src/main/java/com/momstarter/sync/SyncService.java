@@ -129,20 +129,22 @@ public class SyncService {
             if (cached.isPresent()) return cached.get();
         }
 
-        // --- Gate 1: cloud_storage consent (whole-batch) ---
-        if (!consentChecker.isGranted(userId, "cloud_storage")) {
-            throw new ApiException(403, "consent_required", "cloud_storage");
-        }
-
-        // --- Gate 2: lastPulledAt watermark staleness check ---
-        checkWatermarkNotExpired(request.lastPulledAt());
-
-        // --- Gate 3: batch-cap check (1000 records / 5 MB) ---
+        // --- Gate 1: batch-cap check (1000 records / 5 MB) — BEFORE consent (G1 / kick-count spec).
+        // Structural size check must short-circuit before any consent gate so that an oversized
+        // payload is rejected unconditionally regardless of consent state (first-fail-wins, G1).
         int totalRecords = request.changes().values().stream()
                 .mapToInt(CollectionChanges::totalCount).sum();
         if (totalRecords > MAX_PUSH_RECORDS || (payloadBytes > 0 && payloadBytes > MAX_PUSH_BYTES)) {
             throw new ApiException(413, "batch_too_large");
         }
+
+        // --- Gate 2: cloud_storage consent (whole-batch) ---
+        if (!consentChecker.isGranted(userId, "cloud_storage")) {
+            throw new ApiException(403, "consent_required", "cloud_storage");
+        }
+
+        // --- Gate 3: lastPulledAt watermark staleness check ---
+        checkWatermarkNotExpired(request.lastPulledAt());
 
         List<Applied> applied = new ArrayList<>();
         List<Conflict> conflicts = new ArrayList<>();
