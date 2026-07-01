@@ -71,6 +71,15 @@ public class AuthService {
         }
 
         User user = maybe.get();
+
+        // Block soft-deleted accounts (PDPA s.33 / DELETE /account).
+        // Non-enumerating: pays the same bcrypt cost as the "account not found" path so
+        // response timing never reveals whether a deleted account exists.
+        if (user.getDeletedAt() != null) {
+            encoder.matches(req.password(), dummyHash); // constant-time defence
+            throw new ApiException(401, "invalid_credentials");
+        }
+
         // a password-less (e.g. future federated-only) account cannot log in by password
         if (user.getPasswordHash() == null || !encoder.matches(req.password(), user.getPasswordHash())) {
             loginAttempts.recordFailure(email);
