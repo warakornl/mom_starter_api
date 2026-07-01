@@ -48,7 +48,9 @@ public class GlobalExceptionHandler {
             // Offline-sync engine error codes (api-contract "Offline-sync engine (PINNED)")
             Map.entry("batch_too_large",          "Batch exceeds maximum allowed size (1000 records or 5 MB)."),
             Map.entry("invalid_cursor",           "Continuation cursor is invalid or has expired."),
-            Map.entry("watermark_expired",        "Watermark is too old. A full resync is required.")
+            Map.entry("watermark_expired",        "Watermark is too old. A full resync is required."),
+            // Account management (api-contract N9 / DELETE /account / PATCH /account)
+            Map.entry("account_deleted",          "This account has been deleted.")
     );
 
     private static String messageFor(String code) {
