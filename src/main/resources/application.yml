@@ -20,6 +20,21 @@ spring:
 # Per-IP rate limits (requests / minute). Conservative MVP values — tighten + back with a
 # shared store / edge WAF for production (see docs/architecture/infrastructure-diagram.md).
 momstarter:
+  retention:
+    # Tombstone TTL and account-level hard-erasure window in days.
+    # Applied by TombstoneGcScheduler → TombstoneGcService + AccountErasureService.
+    #
+    # LEGAL-PENDING: 180 is an engineering default; it has NOT been confirmed by Thai legal
+    # counsel as satisfying PDPA storage limitation (ม.33) and storage-minimisation principles.
+    # Do NOT launch to production until legal sign-off on this value
+    # (consent-hardgate-erasure-design.md §2.3 / §3.2).
+    # Adjust per environment — example: staging=1 to verify GC fires on short-lived data.
+    days: 180
+  gc:
+    # Cron expression for the daily hard-erasure sweep (6-field Spring cron: s m h d M DOW).
+    # Default: 20:00 UTC = 03:00 Bangkok ICT (UTC+7) — off-peak for Thai users.
+    # Override per environment (e.g. staging: "0 * * * * *" every minute for fast GC testing).
+    cron: "0 0 20 * * *"
   ratelimit:
     login-per-ip-per-min: 20
     register-per-ip-per-min: 15
