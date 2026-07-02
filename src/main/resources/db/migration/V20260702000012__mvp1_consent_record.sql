@@ -112,10 +112,12 @@ CREATE TABLE consent_record (
     -- Server-authoritative timestamp of this grant/withdrawal action.
     -- DEFAULT now() ensures the server clock is used even if the client omits it.
     -- This is the ordering column for "current consent" lookup (see index below).
-    granted_at           timestamptz  NOT NULL DEFAULT now(),
+    -- Note: using 'timestamp with time zone' (not 'timestamptz') for H2 compatibility
+    -- (H2 PostgreSQL-mode does not recognise the shorthand alias).
+    granted_at           timestamp with time zone  NOT NULL DEFAULT now(),
 
     -- Row-creation instant (same value as granted_at in practice; kept for schema consistency).
-    created_at           timestamptz  NOT NULL DEFAULT now()
+    created_at           timestamp with time zone  NOT NULL DEFAULT now()
 
     -- NO deleted_at: consent_record is never client-tombstoned.
     -- Withdrawal = new row with granted=false. Physical purge = legal-hold GC only.
