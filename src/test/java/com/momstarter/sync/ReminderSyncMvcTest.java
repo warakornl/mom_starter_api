@@ -571,6 +571,334 @@ class ReminderSyncMvcTest {
     }
 
     // =========================================================================
+    // FLAG-4 weekly grammar tests — recurrence-weekly-byday-design §3
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // Happy path — valid weekly rule is applied
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_validRule_applied() throws Exception {
+        UUID id = UUID.randomUUID();
+        // canonical weekly rule: byDay MO/WE/FR, interval 1, timesOfDay 08:00
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of("MO", "WE", "FR"));
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly MWF",
+                "medication", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].collection").value("reminders"))
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.applied[0].version").value(1))
+                .andExpect(jsonPath("$.rejected").isEmpty())
+                .andExpect(jsonPath("$.conflicts").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Happy path — weekly rule with interval and until survives round-trip
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_then_pull_weekly_intervalAndUntil_roundtrip() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of("MO", "TH"));
+        rule.put("interval", 2);
+        rule.put("timesOfDay", List.of("07:00", "19:00"));
+        rule.put("until", "2026-12-31");
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Biweekly Mon Thu",
+                "medication", rule, "2026-07-06T07:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.rejected").isEmpty());
+
+        // Pull — all weekly grammar fields must survive as a JSON object
+        mvc.perform(get("/sync/pull")
+                        .header("Authorization", "Bearer " + bearer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.freq")
+                        .value("weekly"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.byDay[0]")
+                        .value("MO"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.byDay[1]")
+                        .value("TH"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.interval")
+                        .value(2))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.timesOfDay[0]")
+                        .value("07:00"))
+                .andExpect(jsonPath("$.changes.reminders.updated[0].recurrenceRule.until")
+                        .value("2026-12-31"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — weekly missing byDay
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_missingByDay_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = Map.of(
+                "freq", "weekly",
+                "timesOfDay", List.of("08:00")); // byDay absent → invalid
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly no byDay",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — weekly with empty byDay array
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_emptyByDay_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of()); // empty array → invalid
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly empty byDay",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — weekly with invalid token in byDay
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_invalidToken_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of("MO", "XX")); // "XX" is not a valid weekday token
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly bad token",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — weekly with duplicate token in byDay
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_duplicateToken_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of("MO", "MO")); // duplicate "MO" → invalid
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly dup token",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — weekly with non-canonical byDay order (FR before MO)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_nonCanonicalOrder_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of("FR", "MO")); // must be MO<FR → rejected
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly bad order",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — weekly interval exceeds cap (>52)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_intervalOverCap_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of("MO"));
+        rule.put("interval", 53); // >52 → invalid for weekly
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly interval 53",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // No over-reject — weekly interval at maximum cap (52) is valid
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_intervalAtCap52_applied() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of("SA"));
+        rule.put("interval", 52); // exactly 52 → valid
+        rule.put("timesOfDay", List.of("10:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly interval 52",
+                "medication", rule, "2026-07-04T10:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.rejected").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — byDay present on daily (forbidden)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_byDayOnDaily_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "daily");
+        rule.put("byDay", List.of("MO")); // byDay forbidden on daily
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Daily with byDay",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — byDay present on every_n_days (forbidden)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_byDayOnEveryNDays_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "every_n_days");
+        rule.put("interval", 3);
+        rule.put("byDay", List.of("TU")); // byDay forbidden on every_n_days
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "EveryNDays with byDay",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — byDay present on one_off (forbidden)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_byDayOnOneOff_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "one_off");
+        rule.put("byDay", List.of("WE")); // byDay forbidden on one_off
+        Map<String, Object> record = buildReminderRecord(id, 0L, "OneOff with byDay",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Grammar reject — non-String element in byDay (instanceof guard, GV design §3)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void push_weekly_integerByDayElement_rejectedValidationError() throws Exception {
+        UUID id = UUID.randomUUID();
+        // byDay element is an integer (123), not a String — exercises the instanceof guard
+        Map<String, Object> rule = new java.util.LinkedHashMap<>();
+        rule.put("freq", "weekly");
+        rule.put("byDay", List.of(123));  // integer, not a String token
+        rule.put("timesOfDay", List.of("08:00"));
+        Map<String, Object> record = buildReminderRecord(id, 0L, "Weekly int byDay",
+                "custom", rule, "2026-07-01T08:00");
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildPushBody("reminders", List.of(record), List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
