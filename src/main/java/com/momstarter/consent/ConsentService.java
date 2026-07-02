@@ -201,7 +201,9 @@ public class ConsentService {
             Long.parseLong(parts[0]);   // epoch millis
             UUID.fromString(parts[1]);  // UUID
             return parts;
-        } catch (IllegalArgumentException | NumberFormatException e) {
+        } catch (IllegalArgumentException e) {
+            // covers Base64 decode failure, UUID.fromString failure, and Long.parseLong failure
+            // (NumberFormatException is a subclass of IllegalArgumentException)
             throw new ApiException(400, "invalid_cursor");
         }
     }
