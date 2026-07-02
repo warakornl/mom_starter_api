@@ -4,6 +4,7 @@ import com.momstarter.account.dto.AccountInput;
 import com.momstarter.account.dto.AccountResponse;
 import com.momstarter.auth.RefreshTokenService;
 import com.momstarter.error.ApiException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -147,7 +148,15 @@ public class AccountService {
         }
 
         if (changed) {
-            user = users.saveAndFlush(user);
+            try {
+                user = users.saveAndFlush(user);
+            } catch (DataIntegrityViolationException ex) {
+                // TOCTOU guard: a concurrent PATCH (or PATCH racing a register) may have
+                // claimed the new email address between our existsByEmail() check and this
+                // flush. Remap to the same non-enumerating 422 validation_error as the
+                // pre-check path — must NOT reveal "email already in use" (C7/§H).
+                throw new ApiException(422, "validation_error");
+            }
         }
 
         return toResponse(user);
