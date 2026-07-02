@@ -247,4 +247,154 @@ class RecurrenceExpanderTest {
                 LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 31));
         assertEquals(List.of("2026-01-05T09:05"), out);
     }
+
+    // =========================================================================
+    // Golden test-vectors GV-8..GV-13 — WEEKLY/byDay canonical byte-equality
+    // data-model §3.5 / recurrence-weekly-byday-design §2.3
+    // Weekday ground-truth: 2026-07-01 = Wednesday (verified in design doc).
+    // Both Java and mobile TS MUST produce identical output for each vector.
+    // =========================================================================
+
+    /**
+     * GV-8: Single weekday (WE), interval 1, anchor IS that weekday.
+     * Window [2026-07-01, 2026-07-15] → 3 Wednesdays.
+     */
+    @Test
+    void gv8_single_weekday_anchor_is_that_weekday() {
+        List<String> out = RecurrenceExpander.expand(new RecurrenceExpander.ExpandParams(
+                RecurrenceExpander.Freq.WEEKLY, 1, List.of("08:00"), List.of("WE"),
+                LocalDateTime.of(2026, 7, 1, 8, 0),
+                null,
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 15)));
+        assertEquals(List.of(
+                "2026-07-01T08:00",
+                "2026-07-08T08:00",
+                "2026-07-15T08:00"), out);
+    }
+
+    /**
+     * GV-9: Mon/Wed/Fri, interval 1, anchor Wed.
+     * Window [2026-07-01, 2026-07-08] → Wed(01), Fri(03), Mon(06), Wed(08).
+     */
+    @Test
+    void gv9_mon_wed_fri_interval1_anchor_wed() {
+        List<String> out = RecurrenceExpander.expand(new RecurrenceExpander.ExpandParams(
+                RecurrenceExpander.Freq.WEEKLY, 1, List.of("09:00"),
+                List.of("MO", "WE", "FR"),
+                LocalDateTime.of(2026, 7, 1, 9, 0),
+                null,
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 8)));
+        assertEquals(List.of(
+                "2026-07-01T09:00",
+                "2026-07-03T09:00",
+                "2026-07-06T09:00",
+                "2026-07-08T09:00"), out);
+    }
+
+    /**
+     * GV-10: Every 2 weeks on Monday; anchor Wednesday (week 0).
+     * Week 1 (07-06) is skipped; week 2 (07-13) fires; week 3 (07-20) skipped;
+     * week 4 (07-27) fires.  Window [2026-07-01, 2026-08-01].
+     */
+    @Test
+    void gv10_every_2_weeks_monday_anchor_wed() {
+        List<String> out = RecurrenceExpander.expand(new RecurrenceExpander.ExpandParams(
+                RecurrenceExpander.Freq.WEEKLY, 2, List.of("07:00"), List.of("MO"),
+                LocalDateTime.of(2026, 7, 1, 7, 0),
+                null,
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 8, 1)));
+        assertEquals(List.of(
+                "2026-07-13T07:00",
+                "2026-07-27T07:00"), out);
+    }
+
+    /**
+     * GV-11: First-day anchor guard + multi-timesOfDay.
+     * startAt = 2026-07-01T14:00, byDay=[WE].  On the anchor date only 14:00 and
+     * 20:00 emit (08:00 is before the anchor time and is skipped).
+     * On 2026-07-08 all three times emit.
+     */
+    @Test
+    void gv11_anchor_guard_multi_times_weekly() {
+        List<String> out = RecurrenceExpander.expand(new RecurrenceExpander.ExpandParams(
+                RecurrenceExpander.Freq.WEEKLY, 1,
+                List.of("08:00", "14:00", "20:00"), List.of("WE"),
+                LocalDateTime.of(2026, 7, 1, 14, 0),
+                null,
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 8)));
+        assertEquals(List.of(
+                "2026-07-01T14:00",
+                "2026-07-01T20:00",
+                "2026-07-08T08:00",
+                "2026-07-08T14:00",
+                "2026-07-08T20:00"), out);
+    }
+
+    /**
+     * GV-12: Anchor weekday NOT in byDay → first fire is next matching weekday.
+     * Anchor = 2026-07-01 (Wed), byDay=[FR].  First fire is 2026-07-03 (Fri).
+     * Window [2026-07-01, 2026-07-10].
+     */
+    @Test
+    void gv12_anchor_not_in_byday_first_fire_next_matching() {
+        List<String> out = RecurrenceExpander.expand(new RecurrenceExpander.ExpandParams(
+                RecurrenceExpander.Freq.WEEKLY, 1, List.of("07:00"), List.of("FR"),
+                LocalDateTime.of(2026, 7, 1, 7, 0),
+                null,
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 10)));
+        assertEquals(List.of(
+                "2026-07-03T07:00",
+                "2026-07-10T07:00"), out);
+    }
+
+    /**
+     * GV-13: Inclusive {@code until} clips the last week.
+     * until = 2026-07-08, byDay=[WE,FR], window [2026-07-01, 2026-07-31].
+     * Fires: Wed 01, Fri 03, Wed 08. Fri 10 (after until) is excluded.
+     */
+    @Test
+    void gv13_inclusive_until_clips_last_week() {
+        List<String> out = RecurrenceExpander.expand(new RecurrenceExpander.ExpandParams(
+                RecurrenceExpander.Freq.WEEKLY, 1, List.of("07:00"),
+                List.of("WE", "FR"),
+                LocalDateTime.of(2026, 7, 1, 7, 0),
+                LocalDate.of(2026, 7, 8),
+                LocalDate.of(2026, 7, 1), LocalDate.of(2026, 7, 31)));
+        assertEquals(List.of(
+                "2026-07-01T07:00",
+                "2026-07-03T07:00",
+                "2026-07-08T07:00"), out);
+    }
+
+    // =========================================================================
+    // Weekday helper unit tests (design §2.1 pinned formulas)
+    // =========================================================================
+
+    /**
+     * isoDow0 ground-truth: 1970-01-01 (epoch day 0) is Thursday → index 3.
+     */
+    @Test
+    void isoDow0_epochDay0_isThursday() {
+        assertEquals(3, RecurrenceExpander.isoDow0(0));
+    }
+
+    /**
+     * tokenOf ground-truth: 2026-07-01 is Wednesday → "WE".
+     * Ensures the week-of-year formula is anchored correctly.
+     */
+    @Test
+    void tokenOf_20260701_isWednesday() {
+        long epochDay = LocalDate.of(2026, 7, 1).toEpochDay();
+        assertEquals("WE", RecurrenceExpander.tokenOf(epochDay));
+    }
+
+    /**
+     * mondayOf ground-truth: 2026-07-01 (Wed) → ISO Monday = 2026-06-29.
+     */
+    @Test
+    void mondayOf_wednesday_returnsMonday() {
+        long wednesdayEpoch = LocalDate.of(2026, 7, 1).toEpochDay();
+        long expectedMonday = LocalDate.of(2026, 6, 29).toEpochDay();
+        assertEquals(expectedMonday, RecurrenceExpander.mondayOf(wednesdayEpoch));
+    }
 }
