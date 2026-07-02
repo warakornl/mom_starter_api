@@ -11,6 +11,9 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -157,5 +160,64 @@ class AccountPatchMvcTest {
                         .contentType(APPLICATION_JSON)
                         .content("{\"locale\":\"en\"}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // -------------------------------------------------------------------------
+    // FIX C coverage additions
+    // -------------------------------------------------------------------------
+
+    @Test
+    void patch_withMalformedIfMatch_returns412() throws Exception {
+        // parseIfMatch throws 412 precondition_failed when the value cannot be
+        // parsed as a number (e.g. "abc" is not a valid version token).
+        mvc.perform(patch("/account")
+                        .header("Authorization", bearer)
+                        .header("If-Match", "\"abc\"")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"locale\":\"en\"}"))
+                .andExpect(status().is(412))
+                .andExpect(jsonPath("$.code").value("precondition_failed"));
+    }
+
+    @Test
+    void patch_afterSoftDelete_returns404() throws Exception {
+        // requireActiveUser blocks soft-deleted accounts before the If-Match check
+        user.setDeletedAt(Instant.now());
+        user.setStatus("deleted");
+        users.saveAndFlush(user);
+
+        mvc.perform(patch("/account")
+                        .header("Authorization", bearer)
+                        .header("If-Match", "\"" + user.getVersion() + "\"")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"locale\":\"en\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("not_found"));
+    }
+
+    @Test
+    void patch_idor_tokenOnlyAffectsOwnAccount() throws Exception {
+        // The userId is extracted from the JWT, never from a URL parameter.
+        // User B's token can only ever mutate user B's row — never user A's.
+        User userB = new User();
+        userB.setEmail("patch-b@example.com");
+        userB.setLocale("en");
+        userB.setEmailVerified(true);
+        userB = users.saveAndFlush(userB);
+        String bearerB = "Bearer " + jwtService.issueAccessToken(userB.getId(), true);
+
+        // User B patches with their own token → response belongs to user B
+        mvc.perform(patch("/account")
+                        .header("Authorization", bearerB)
+                        .header("If-Match", "\"" + userB.getVersion() + "\"")
+                        .contentType(APPLICATION_JSON)
+                        .content("{\"locale\":\"th\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value("patch-b@example.com"));
+
+        // User A's account is entirely untouched
+        User foundA = users.findById(user.getId()).orElseThrow();
+        assertThat(foundA.getEmail()).isEqualTo("mom-patch@example.com");
+        assertThat(foundA.getLocale()).isEqualTo("th");
     }
 }

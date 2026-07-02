@@ -138,4 +138,33 @@ class AccountDeleteMvcTest {
         mvc.perform(delete("/account"))
                 .andExpect(status().isUnauthorized());
     }
+
+    // -------------------------------------------------------------------------
+    // FIX C coverage additions
+    // -------------------------------------------------------------------------
+
+    @Test
+    void delete_idor_tokenOnlyDeletesOwnAccount() throws Exception {
+        // The userId is extracted from the JWT — user B's token soft-deletes
+        // user B only; user A's row must be completely unaffected.
+        User userB = new User();
+        userB.setEmail("delete-b@example.com");
+        userB.setLocale("th");
+        userB.setEmailVerified(true);
+        userB = users.saveAndFlush(userB);
+        String bearerB = "Bearer " + jwtService.issueAccessToken(userB.getId(), true);
+
+        mvc.perform(delete("/account").header("Authorization", bearerB))
+                .andExpect(status().isAccepted());
+
+        // User B is soft-deleted
+        User deletedB = users.findById(userB.getId()).orElseThrow();
+        assertThat(deletedB.getDeletedAt()).isNotNull();
+        assertThat(deletedB.getStatus()).isEqualTo("deleted");
+
+        // User A is entirely untouched
+        User activeA = users.findById(user.getId()).orElseThrow();
+        assertThat(activeA.getDeletedAt()).isNull();
+        assertThat(activeA.getStatus()).isEqualTo("active");
+    }
 }

@@ -91,4 +91,24 @@ class AccountGetMvcTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("not_found"));
     }
+
+    // -------------------------------------------------------------------------
+    // FIX C coverage additions
+    // -------------------------------------------------------------------------
+
+    @Test
+    void get_idor_tokenOnlyReturnsOwnAccount() throws Exception {
+        // The userId is extracted from the JWT — user B's token must only ever
+        // return user B's own data, never user A's row.
+        User userB = new User();
+        userB.setEmail("get-b@example.com");
+        userB.setLocale("en");
+        userB.setEmailVerified(true);
+        userB = users.saveAndFlush(userB);
+        String bearerB = "Bearer " + jwtService.issueAccessToken(userB.getId(), true);
+
+        mvc.perform(get("/account").header("Authorization", bearerB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value("get-b@example.com"));
+    }
 }
