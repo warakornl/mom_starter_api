@@ -1,5 +1,7 @@
 package com.momstarter.sync;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +37,8 @@ import java.util.List;
 @Service
 public class TombstoneGcService {
 
+    private static final Logger log = LoggerFactory.getLogger(TombstoneGcService.class);
+
     /**
      * Central tombstone GC sweep list — the ENUMERATED set of tables that carry
      * a {@code deleted_at} column and are subject to the tombstone retention policy.
@@ -50,7 +54,12 @@ public class TombstoneGcService {
             "reminders",
             "reminder_occurrences",
             "checklist_items",
-            "kick_count_session"       // K-6 retention — enumerated here per DB-reviewer #3
+            "kick_count_session",      // K-6 retention — enumerated here per DB-reviewer #3
+            "pregnancy_profile"        // Phase 3 (hard-erasure prod-gate) — blocker B:
+                                       // EDD/birth_date are the most sensitive fields (PDPA ม.26).
+                                       // Soft-delete logic already exists (put() resurrect path);
+                                       // entries older than retention window are NEVER resurrectable
+                                       // (policy: >180 days = intent to erase permanently, ม.33).
     );
 
     private final JdbcTemplate jdbc;
@@ -94,6 +103,10 @@ public class TombstoneGcService {
                     "DELETE FROM " + table + " WHERE deleted_at IS NOT NULL AND deleted_at < ?",
                     cutoffTs
             );
+            // Log per-table count for accountability (PDPA ม.37) — no personal data logged.
+            if (deleted > 0) {
+                log.info("Tombstone GC: purged {} row(s) from {} (cutoff={})", deleted, table, cutoff);
+            }
             total += deleted;
         }
         return total;

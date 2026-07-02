@@ -4,6 +4,8 @@ import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
 import com.momstarter.kickcount.KickCountSession;
 import com.momstarter.kickcount.KickCountSessionRepository;
+import com.momstarter.pregnancy.PregnancyProfile;
+import com.momstarter.pregnancy.PregnancyProfileRepository;
 import com.momstarter.supply.SupplyItem;
 import com.momstarter.supply.SupplyItemRepository;
 import org.junit.jupiter.api.Test;
@@ -16,6 +18,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
@@ -55,6 +58,7 @@ class TombstoneGcServiceTest {
     @Autowired private TombstoneGcService gcService;
     @Autowired private KickCountSessionRepository kickSessions;
     @Autowired private SupplyItemRepository supplyItems;
+    @Autowired private PregnancyProfileRepository profiles;
     @Autowired private UserRepository users;
 
     // -------------------------------------------------------------------------
@@ -71,15 +75,64 @@ class TombstoneGcServiceTest {
 
     @Test
     void purgeTableNames_enumeratesAllSyncTables() {
-        // All tables with tombstone columns must be in the list
+        // All tables with tombstone columns must be in the list.
+        // pregnancy_profile was added in Phase 3 (hard-erasure prod-gate) — EDD/birth_date
+        // are the most sensitive fields (PDPA ม.26) and must be subject to GC.
         List<String> tables = gcService.purgeTableNames();
         assertThat(tables).containsExactlyInAnyOrder(
                 "supply_items",
                 "reminders",
                 "reminder_occurrences",
                 "checklist_items",
-                "kick_count_session"
+                "kick_count_session",
+                "pregnancy_profile"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // pregnancy_profile: added to PURGE_TABLES in Phase 3 (blocker B)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void purge_pregnancyProfile_oldTombstone_purged() {
+        User user = savedUser("gc-pp-1@example.com");
+        PregnancyProfile p = buildPregnancyProfile(user.getId());
+        // Tombstoned 181 days ago — past the 180-day TTL
+        p.setDeletedAt(Instant.now().minus(181, ChronoUnit.DAYS));
+        em.persistAndFlush(p);
+        em.clear();
+
+        int purged = gcService.purgeExpiredTombstones(180);
+
+        assertThat(purged).isGreaterThanOrEqualTo(1);
+        assertThat(profiles.findById(p.getId())).isEmpty();
+    }
+
+    @Test
+    void purge_pregnancyProfile_recentTombstone_retained() {
+        User user = savedUser("gc-pp-2@example.com");
+        PregnancyProfile p = buildPregnancyProfile(user.getId());
+        // Tombstoned 10 days ago — within TTL
+        p.setDeletedAt(Instant.now().minus(10, ChronoUnit.DAYS));
+        em.persistAndFlush(p);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(profiles.findById(p.getId())).isPresent();
+    }
+
+    @Test
+    void purge_pregnancyProfile_liveRow_notTouched() {
+        User user = savedUser("gc-pp-3@example.com");
+        PregnancyProfile p = buildPregnancyProfile(user.getId());
+        // deletedAt = null — live row must not be touched
+        em.persistAndFlush(p);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(profiles.findById(p.getId())).isPresent();
     }
 
     // -------------------------------------------------------------------------
@@ -169,6 +222,14 @@ class TombstoneGcServiceTest {
         User u = new User();
         u.setEmail(email);
         return em.persistAndFlush(u);
+    }
+
+    private PregnancyProfile buildPregnancyProfile(UUID userId) {
+        PregnancyProfile p = new PregnancyProfile();
+        p.setUserId(userId);
+        p.setEdd(LocalDate.of(2027, 6, 1));
+        p.setEddBasis("due_date");
+        return p;
     }
 
     private KickCountSession buildKickSession(UUID userId) {
