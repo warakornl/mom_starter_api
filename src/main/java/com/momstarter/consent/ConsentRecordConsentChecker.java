@@ -4,8 +4,8 @@ import com.momstarter.pregnancy.ConsentChecker;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
@@ -13,14 +13,15 @@ import java.util.UUID;
 /**
  * Production {@link ConsentChecker} backed by {@link ConsentRecordRepository}.
  *
- * <h3>Profile strategy (per consent-slice-design.md §4.4)</h3>
+ * <h3>Gating strategy (per consent-slice-design.md §4.4)</h3>
  * <ul>
- *   <li>{@code @Profile("!test")} — this bean is INACTIVE in the {@code test} profile
- *       (used by all MVC slice tests and repository tests). In the {@code test} profile
- *       {@link com.momstarter.pregnancy.AlwaysGrantedConsentChecker} remains the default.</li>
- *   <li>{@code @Primary} — when active (any profile that is NOT {@code test}, including the
- *       default production profile and the {@code integrationtest} profile), this bean
- *       takes precedence over {@code AlwaysGrantedConsentChecker}.</li>
+ *   <li>{@code @ConditionalOnProperty(momstarter.consent.enforce=true)} — this bean is
+ *       INACTIVE by default (property absent/false). Production, UAT, and the {@code test}
+ *       profile all keep {@link com.momstarter.pregnancy.AlwaysGrantedConsentChecker} as the
+ *       default UNTIL the flip. It activates ONLY when the property is explicitly {@code true}
+ *       (set in prod config for the Phase-2 flip, and in ConsentCheckerIntegrationTest).</li>
+ *   <li>{@code @Primary} — when active (property=true), this bean takes precedence over
+ *       {@code AlwaysGrantedConsentChecker}.</li>
  * </ul>
  *
  * <h3>Phase 2 gate</h3>
@@ -48,7 +49,7 @@ import java.util.UUID;
  */
 @Component
 @Primary
-@Profile("!test")
+@ConditionalOnProperty(name = "momstarter.consent.enforce", havingValue = "true")
 public class ConsentRecordConsentChecker implements ConsentChecker {
 
     private static final Logger log = LoggerFactory.getLogger(ConsentRecordConsentChecker.class);

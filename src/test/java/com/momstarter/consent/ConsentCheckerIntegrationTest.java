@@ -69,6 +69,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "momstarter.ratelimit.verify-email-per-ip-per-min=1000000",
         // Dev mode must not auto-verify (keep normal auth flow)
         "momstarter.dev.auto-verify-email=false",
+        // Activate the real ConsentRecordConsentChecker (the flip) for this integration test
+        "momstarter.consent.enforce=true",
 })
 @Transactional
 class ConsentCheckerIntegrationTest {
