@@ -1,5 +1,6 @@
 package com.momstarter.pregnancy;
 
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
@@ -7,22 +8,24 @@ import java.util.UUID;
 /**
  * Stub implementation of {@link ConsentChecker} that always returns {@code true} (granted).
  *
- * <p>TODO: Replace with a real DB-backed implementation once the {@code account/consents}
- * feature (POST /account/consents, ConsentRecord) is implemented. At that point, query the
- * latest {@code ConsentRecord} row for {@code (userId, consentType)} and return
- * {@code record.granted == true}.
+ * <p><strong>Profile strategy (consent-slice-design.md §4.4):</strong>
+ * This bean is active <em>only</em> in the {@code test} Spring profile via
+ * {@code @Profile("test")}.  In production and UAT (default profile) the
+ * {@link com.momstarter.consent.ConsentRecordConsentChecker} ({@code @Profile("!test")},
+ * {@code @Primary}) is loaded instead.
  *
- * <p>This stub is the primary {@link ConsentChecker} bean for MVP. The gate code path in
- * {@link PregnancyProfileService} is already wired — only this stub needs to be swapped
- * for the real implementation when the consents slice ships.
+ * <p><strong>Phase-2 gate:</strong> activating the real checker in the production environment
+ * (flipping the default config) is a separate step gated on the mobile consent flow.  Until
+ * that flip, the deployed application uses this stub so that UAT is unblocked.  The gate code
+ * path in {@link PregnancyProfileService} is already wired and will enforce automatically once
+ * the flip is made — no call-site changes are required.
  *
- * <p>PDPA note: the {@code general_health} gate on {@code PUT /pregnancy-profile} is a
- * server-side defense-in-depth check (api-contract "Consent gating — health-data processing").
- * Granting consent unconditionally here is intentional for the MVP UAT phase. The gate
- * is <strong>not</strong> permanently bypassed — it is wired and will enforce once the
- * real implementation is installed.
+ * <p>PDPA note: granting consent unconditionally here is intentional for the MVP UAT phase.
+ * The gate is <strong>not</strong> permanently bypassed — it is wired and will enforce once
+ * the real implementation is activated.
  */
 @Component
+@Profile("test")
 public class AlwaysGrantedConsentChecker implements ConsentChecker {
 
     @Override
