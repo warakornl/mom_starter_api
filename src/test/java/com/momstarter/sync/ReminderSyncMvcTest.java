@@ -174,7 +174,9 @@ class ReminderSyncMvcTest {
     @Test
     void push_badFreq_rejectedValidationError() throws Exception {
         UUID id = UUID.randomUUID();
-        Map<String, Object> rule = Map.of("freq", "weekly", "timesOfDay", List.of("08:00"));
+        // "monthly" is a genuinely-unknown freq (weekly is now valid) — keeps the
+        // VALID_FREQS unknown-freq guard covered after weekly was added.
+        Map<String, Object> rule = Map.of("freq", "monthly", "timesOfDay", List.of("08:00"));
         Map<String, Object> record = buildReminderRecord(id, 0L, "Bad freq",
                 "custom", rule, "2026-07-01T08:00");
 
