@@ -252,6 +252,106 @@ class ReminderLocalPgSmokeTest {
     }
 
     // -------------------------------------------------------------------------
+    // weekly + byDay round-trip on PG
+    // Addresses h2-masks-jsonb-binding pitfall: H2 in PostgreSQL MODE silently
+    // accepts the weekly rule; real Postgres must also accept it without type-mismatch.
+    // -------------------------------------------------------------------------
+
+    /**
+     * Saves a {@link Reminder} with a {@code weekly} {@code recurrenceRule} (containing
+     * {@code byDay}) directly via JPA and flushes to real PostgreSQL.
+     *
+     * <p>H2 in PostgreSQL MODE would accept this regardless; only real Postgres proves the
+     * jsonb binding path is correct for the new {@code byDay} field inside the jsonb column.
+     */
+    @Test
+    void jpa_saveFlush_weekly_recurrenceRule_doesNotThrowOnPg() {
+        UUID id = UUID.randomUUID();
+        Reminder r = new Reminder();
+        r.setId(id);
+        r.setUserId(userId);
+        r.setType("medication");
+        r.setDisplayTitle("PG weekly byDay smoke");
+        r.setRecurrenceRule(
+                "{\"freq\":\"weekly\",\"byDay\":[\"MO\",\"WE\",\"FR\"],\"timesOfDay\":[\"08:00\"]}");
+        r.setStartAt(LocalDateTime.of(2026, 7, 1, 8, 0));
+        r.setActive(true);
+
+        Reminder saved = reminders.saveAndFlush(r);
+        reminders.initVersionToOne(saved.getId());
+
+        Reminder loaded = reminders.findById(id).orElseThrow();
+        assertThat(loaded.getRecurrenceRule()).contains("\"freq\"");
+        assertThat(loaded.getRecurrenceRule()).contains("weekly");
+        assertThat(loaded.getRecurrenceRule()).contains("byDay");
+        assertThat(loaded.getDisplayTitle()).isEqualTo("PG weekly byDay smoke");
+    }
+
+    /**
+     * Pushes a {@code weekly} reminder with {@code byDay} via {@code POST /sync/push},
+     * then pulls and asserts the full rule (including {@code byDay}) arrives as a JSON object.
+     */
+    @Test
+    void push_then_pull_weekly_byDay_isJsonObjectOnPg() throws Exception {
+        UUID id = UUID.randomUUID();
+        String pushBody = objectMapper.writeValueAsString(Map.of(
+                "changes", Map.of(
+                        "reminders", Map.of(
+                                "created", List.of(Map.of(
+                                        "id", id.toString(),
+                                        "version", 0,
+                                        "displayTitle", "PG weekly round-trip",
+                                        "type", "medication",
+                                        "recurrenceRule", Map.of(
+                                                "freq", "weekly",
+                                                "byDay", List.of("MO", "TH"),
+                                                "interval", 2,
+                                                "timesOfDay", List.of("07:00", "19:00"),
+                                                "until", "2026-12-31"),
+                                        "startAt", "2026-07-06T07:00",
+                                        "active", true,
+                                        "clientId", UUID.randomUUID().toString()
+                                )),
+                                "updated", List.of(),
+                                "deleted", List.of()
+                        )
+                ),
+                "lastPulledAt", "0"
+        ));
+
+        // Push — must be applied; validates byDay on real Postgres jsonb column
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(pushBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applied[0].id").value(id.toString()))
+                .andExpect(jsonPath("$.rejected").isEmpty());
+
+        // Pull — recurrenceRule including byDay must arrive as a JSON object, not a string
+        MvcResult pullResult = mvc.perform(get("/sync/pull")
+                        .header("Authorization", "Bearer " + bearer))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        com.fasterxml.jackson.databind.JsonNode pullBody =
+                objectMapper.readTree(pullResult.getResponse().getContentAsString());
+        com.fasterxml.jackson.databind.JsonNode rr =
+                pullBody.at("/changes/reminders/updated/0/recurrenceRule");
+        assertThat(rr.isObject())
+                .as("Expected ObjectNode from PG jsonb column, got nodeType=%s value=%s",
+                        rr.getNodeType(), rr)
+                .isTrue();
+        assertThat(rr.get("freq").asText()).isEqualTo("weekly");
+        assertThat(rr.get("byDay").get(0).asText()).isEqualTo("MO");
+        assertThat(rr.get("byDay").get(1).asText()).isEqualTo("TH");
+        assertThat(rr.get("interval").asInt()).isEqualTo(2);
+        assertThat(rr.get("timesOfDay").get(0).asText()).isEqualTo("07:00");
+        assertThat(rr.get("timesOfDay").get(1).asText()).isEqualTo("19:00");
+        assertThat(rr.get("until").asText()).isEqualTo("2026-12-31");
+    }
+
+    // -------------------------------------------------------------------------
     // every_n_days + until round-trip on PG (ISSUE-6)
     // -------------------------------------------------------------------------
 
