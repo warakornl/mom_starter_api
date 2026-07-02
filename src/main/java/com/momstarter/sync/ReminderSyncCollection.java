@@ -67,8 +67,28 @@ class ReminderSyncCollection implements SyncCollection {
     private static final Set<String> VALID_SOURCE_REF_TYPES = Set.of(
             "medication_plan", "checklist_item", "supply_item");
 
-    /** Valid freq values per FLAG-4 grammar §a. */
-    private static final Set<String> VALID_FREQS = Set.of("one_off", "daily", "every_n_days");
+    /** Valid freq values per FLAG-4 grammar §a (extended with "weekly"). */
+    private static final Set<String> VALID_FREQS = Set.of("one_off", "daily", "every_n_days", "weekly");
+
+    /**
+     * Valid ISO weekday tokens for {@code byDay} (FLAG-4 grammar, weekly extension).
+     * Tokens are two-letter uppercase RFC-5545 abbreviations, NOT integers, to prevent
+     * the JS getDay(0=Sun) vs Java DayOfWeek(1=Mon) cross-platform integer mismatch
+     * that would silently fork the occurrence-id hash and strand done/snoozed rows.
+     */
+    private static final Set<String> VALID_WEEKDAY_TOKENS =
+            Set.of("MO", "TU", "WE", "TH", "FR", "SA", "SU");
+
+    /**
+     * Canonical order index for {@code byDay} tokens: 0=MO, 1=TU, ..., 6=SU.
+     * Used to enforce ascending canonical order (mirrors the discipline of
+     * {@code validateTimesOfDay} for ascending {@code timesOfDay}).
+     */
+    private static final Map<String, Integer> TOKEN_INDEX = Map.of(
+            "MO", 0, "TU", 1, "WE", 2, "TH", 3, "FR", 4, "SA", 5, "SU", 6);
+
+    /** Maximum {@code interval} value for {@code weekly} (OQ-3 decision: 1..52 cap on weekly only). */
+    private static final int WEEKLY_MAX_INTERVAL = 52;
 
     /** HH:mm pattern (hours 00-23, minutes 00-59). */
     private static final Pattern HH_MM = Pattern.compile("^([01]\\d|2[0-3]):[0-5]\\d$");
@@ -290,7 +310,23 @@ class ReminderSyncCollection implements SyncCollection {
     // -------------------------------------------------------------------------
 
     /**
-     * Validates {@code recurrenceRule} JSON against the FLAG-4 grammar.
+     * Validates {@code recurrenceRule} JSON against the FLAG-4 grammar
+     * (api-contract FLAG-4 §a, extended with the {@code weekly}/{@code byDay} grammar).
+     *
+     * <p>New rules added by the weekly extension (recurrence-weekly-byday-design §3):
+     * <ul>
+     *   <li>{@code "weekly"} added to the valid {@code freq} set.</li>
+     *   <li>{@code byDay} is <strong>FORBIDDEN</strong> on {@code one_off} / {@code daily} /
+     *       {@code every_n_days} → {@code validation_error}.</li>
+     *   <li>{@code weekly} requires a non-empty {@code byDay} in canonical order
+     *       ({@code MO<TU<WE<TH<FR<SA<SU}), no duplicates, all valid ISO tokens.</li>
+     *   <li>Each {@code byDay} element is {@code instanceof String}-checked before token
+     *       comparison to prevent {@code ClassCastException} on malformed jsonb payloads
+     *       (e.g. {@code [123]}) — mirror of the HH_MM guard in {@code validateTimesOfDay}.</li>
+     *   <li>{@code interval} cap {@code 1..52} on {@code weekly} ONLY (OQ-3 decision).
+     *       The cap is intentionally <strong>not</strong> retrofitted onto {@code every_n_days}
+     *       (backward-incompatible — would 422 already-stored valid rules on re-sync).</li>
+     * </ul>
      *
      * @return null if valid; a human-readable error string if invalid
      */
@@ -307,16 +343,20 @@ class ReminderSyncCollection implements SyncCollection {
 
         String freq = extractStringFromMap(rule, "freq");
         if (freq == null || !VALID_FREQS.contains(freq)) {
-            return "freq must be one of: one_off, daily, every_n_days";
+            return "freq must be one of: one_off, daily, every_n_days, weekly";
         }
 
+        Object byDayRaw = rule.get("byDay");
         Object intervalRaw = rule.get("interval");
         Object timesOfDayRaw = rule.get("timesOfDay");
         Object untilRaw = rule.get("until");
 
         switch (freq) {
             case "one_off" -> {
-                // timesOfDay, interval, until are FORBIDDEN on one_off (FLAG-4 §a)
+                // byDay, timesOfDay, interval, until are FORBIDDEN on one_off (FLAG-4 §a)
+                if (byDayRaw != null) {
+                    return "byDay is forbidden for one_off";
+                }
                 if (timesOfDayRaw != null) {
                     return "timesOfDay is forbidden for one_off";
                 }
@@ -329,6 +369,10 @@ class ReminderSyncCollection implements SyncCollection {
                 }
             }
             case "daily", "every_n_days" -> {
+                // byDay is FORBIDDEN on daily and every_n_days
+                if (byDayRaw != null) {
+                    return "byDay is forbidden for " + freq;
+                }
                 // timesOfDay required, non-empty, sorted, no-dups, each "HH:mm"
                 String timesError = validateTimesOfDay(timesOfDayRaw);
                 if (timesError != null) return timesError;
@@ -343,6 +387,7 @@ class ReminderSyncCollection implements SyncCollection {
                     if (interval < 1) {
                         return "interval must be >= 1";
                     }
+                    // NOTE: no upper-bound cap on every_n_days (OQ-3: backward-compat risk)
                 } else {
                     // daily: interval must be absent (or 1 treated as absent)
                     if (intervalRaw != null) {
@@ -362,6 +407,82 @@ class ReminderSyncCollection implements SyncCollection {
                     }
                 }
             }
+            case "weekly" -> {
+                // byDay: required, non-empty, each element a valid String token,
+                // no duplicates, canonical order MO<TU<WE<TH<FR<SA<SU
+                String byDayError = validateByDay(byDayRaw);
+                if (byDayError != null) return byDayError;
+
+                // timesOfDay: required, non-empty, canonical (same rules as daily/every_n_days)
+                String timesError = validateTimesOfDay(timesOfDayRaw);
+                if (timesError != null) return timesError;
+
+                // interval: optional; if present must be integer 1..52 (OQ-3 weekly-only cap)
+                if (intervalRaw != null) {
+                    int weeklyInterval;
+                    try { weeklyInterval = ((Number) intervalRaw).intValue(); }
+                    catch (Exception e) { return "interval must be an integer"; }
+                    if (weeklyInterval < 1) {
+                        return "interval must be >= 1 for weekly";
+                    }
+                    if (weeklyInterval > WEEKLY_MAX_INTERVAL) {
+                        return "interval must be <= " + WEEKLY_MAX_INTERVAL + " for weekly";
+                    }
+                }
+
+                // until: optional, YYYY-MM-DD if present
+                if (untilRaw != null) {
+                    try { LocalDate.parse(untilRaw.toString()); }
+                    catch (DateTimeParseException e) {
+                        return "until must be YYYY-MM-DD or null";
+                    }
+                }
+            }
+        }
+        return null; // valid
+    }
+
+    /**
+     * Validates the {@code byDay} field for a {@code weekly} recurrence rule.
+     *
+     * <p>Rules (recurrence-weekly-byday-design §3):
+     * <ul>
+     *   <li>Must be a non-empty List.</li>
+     *   <li>Each element must be a {@code String} (instanceof check — prevents
+     *       {@code ClassCastException} on malformed payloads like {@code [123]}).</li>
+     *   <li>Each element must be one of the 7 ISO tokens {@code MO..SU}.</li>
+     *   <li>No duplicates.</li>
+     *   <li>Strictly ascending canonical order {@code MO<TU<WE<TH<FR<SA<SU}.</li>
+     * </ul>
+     *
+     * @return null if valid; a human-readable error string if invalid
+     */
+    private String validateByDay(Object byDayRaw) {
+        if (!(byDayRaw instanceof List)) {
+            return "byDay is required and must be a non-empty array for weekly";
+        }
+        @SuppressWarnings("unchecked")
+        List<Object> byDayList = (List<Object>) byDayRaw;
+        if (byDayList.isEmpty()) {
+            return "byDay is required and must be a non-empty array for weekly";
+        }
+        int prevIdx = -1;
+        for (Object elem : byDayList) {
+            // instanceof String guard: prevents ClassCastException on malformed jsonb [123]-style payloads
+            if (!(elem instanceof String token)) {
+                return "byDay entries must be strings";
+            }
+            if (!VALID_WEEKDAY_TOKENS.contains(token)) {
+                return "byDay entries must be one of MO,TU,WE,TH,FR,SA,SU";
+            }
+            int idx = TOKEN_INDEX.get(token);
+            if (idx == prevIdx) {
+                return "byDay must not contain duplicates";
+            }
+            if (idx < prevIdx) {
+                return "byDay must be in canonical weekday order (MO<TU<WE<TH<FR<SA<SU)";
+            }
+            prevIdx = idx;
         }
         return null; // valid
     }
