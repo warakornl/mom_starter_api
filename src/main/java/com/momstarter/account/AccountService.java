@@ -198,6 +198,14 @@ public class AccountService {
 
         // Revoke every refresh-token family: blocks all devices from refreshing.
         // Access tokens are stateless (≤15 min) and expire naturally.
+        //
+        // PDPA s.33 / MVP acceptance: a just-deleted user's current access token
+        // remains technically valid for up to 15 min after this call. That window
+        // is BOUNDED — revoking all refresh families here prevents the user from
+        // obtaining ANY new token after deletion, so the live window cannot be
+        // extended. GET /account already returns 404 for deleted users within
+        // that window (requireActiveUser guard). A per-request deleted-user filter
+        // would close the window entirely but is deferred (separate design decision).
         refreshTokens.revokeAllForUser(userId);
 
         // -----------------------------------------------------------------------
