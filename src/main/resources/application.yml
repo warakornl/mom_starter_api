@@ -21,8 +21,8 @@ spring:
 # shared store / edge WAF for production (see docs/architecture/infrastructure-diagram.md).
 momstarter:
   retention:
-    # Tombstone TTL and account-level hard-erasure window in days.
-    # Applied by TombstoneGcScheduler → TombstoneGcService + AccountErasureService.
+    # Tombstone TTL and Tier-1 account child-erasure window in days.
+    # Applied by TombstoneGcScheduler → TombstoneGcService + AccountErasureService.Tier1.
     #
     # LEGAL-PENDING: 180 is an engineering default; it has NOT been confirmed by Thai legal
     # counsel as satisfying PDPA storage limitation (ม.33) and storage-minimisation principles.
@@ -30,6 +30,16 @@ momstarter:
     # (consent-hardgate-erasure-design.md §2.3 / §3.2).
     # Adjust per environment — example: staging=1 to verify GC fires on short-lived data.
     days: 180
+
+    # Tier-2 legal-hold window in days: the minimum time after account soft-deletion before
+    # consent_record + users rows are hard-purged by AccountErasureService.Tier2.
+    # consent_record must survive the 180d health-data retention pass so PDPA ม.37
+    # consent-audit evidence is available for the full legal-hold period.
+    #
+    # LEGAL-PENDING: 365 (one year) is an engineering default proposed by the DBA; Thai
+    # legal counsel must confirm the exact figure satisfies PDPA storage-limitation
+    # principles (ม.26, ม.33) before production launch.
+    legal-hold-days: 365
   gc:
     # Cron expression for the daily hard-erasure sweep (6-field Spring cron: s m h d M DOW).
     # Default: 20:00 UTC = 03:00 Bangkok ICT (UTC+7) — off-peak for Thai users.
