@@ -20,11 +20,20 @@ import static org.mockito.Mockito.when;
  *
  * <p>Uses Mockito directly (no Spring context) to avoid starting the scheduler cron
  * automatically during tests. The {@code @Scheduled} annotation is verified via reflection.
- * Delegation to {@link TombstoneGcService} and {@link AccountErasureService} is verified
- * via mock invocation assertions.
  *
- * <p>The {@code retentionDays} field (normally injected via {@code @Value}) is set
- * with {@link ReflectionTestUtils#setField} to 180, matching the production default.
+ * <h2>Two-tier delegation</h2>
+ * <p>The daily cron now dispatches to THREE operations in order:
+ * <ol>
+ *   <li>{@link TombstoneGcService#purgeExpiredTombstones(int)} — collection tombstone GC.</li>
+ *   <li>{@link AccountErasureService#purgeExpiredAccountChildren(int)} — Tier-1 (180d):
+ *       purges health/auth child rows; retains users + consent_record.</li>
+ *   <li>{@link AccountErasureService#purgeLegalHoldAccounts(int)} — Tier-2 (~1yr):
+ *       purges consent_record THEN users (FK-safe) for accounts past the legal-hold window.</li>
+ * </ol>
+ *
+ * <p>The {@code retentionDays} field (normally injected via {@code @Value}) is set with
+ * {@link ReflectionTestUtils#setField} to 180, and {@code legalHoldDays} is set to 365,
+ * matching the production defaults.
  */
 @ExtendWith(MockitoExtension.class)
 class TombstoneGcSchedulerTest {
@@ -39,6 +48,8 @@ class TombstoneGcSchedulerTest {
         scheduler = new TombstoneGcScheduler(tombstoneGcService, accountErasureService);
         // Simulate @Value("${momstarter.retention.days:180}") injection
         ReflectionTestUtils.setField(scheduler, "retentionDays", 180);
+        // Simulate @Value("${momstarter.retention.legal-hold-days:365}") injection
+        ReflectionTestUtils.setField(scheduler, "legalHoldDays", 365);
     }
 
     // -------------------------------------------------------------------------
@@ -78,7 +89,8 @@ class TombstoneGcSchedulerTest {
     @Test
     void runDailyPurge_delegatesToTombstoneGcServiceWithConfiguredRetentionDays() {
         when(tombstoneGcService.purgeExpiredTombstones(180)).thenReturn(0);
-        when(accountErasureService.purgeExpiredAccounts(180)).thenReturn(0);
+        when(accountErasureService.purgeExpiredAccountChildren(180)).thenReturn(0);
+        when(accountErasureService.purgeLegalHoldAccounts(365)).thenReturn(0);
 
         scheduler.runDailyPurge();
 
@@ -86,31 +98,49 @@ class TombstoneGcSchedulerTest {
     }
 
     // -------------------------------------------------------------------------
-    // Delegation to AccountErasureService
+    // Delegation to AccountErasureService Tier-1: purgeExpiredAccountChildren
     // -------------------------------------------------------------------------
 
     @Test
-    void runDailyPurge_delegatesToAccountErasureServiceWithConfiguredRetentionDays() {
+    void runDailyPurge_delegatesToPurgeExpiredAccountChildrenWithRetentionDays() {
         when(tombstoneGcService.purgeExpiredTombstones(180)).thenReturn(0);
-        when(accountErasureService.purgeExpiredAccounts(180)).thenReturn(0);
+        when(accountErasureService.purgeExpiredAccountChildren(180)).thenReturn(0);
+        when(accountErasureService.purgeLegalHoldAccounts(365)).thenReturn(0);
 
         scheduler.runDailyPurge();
 
-        verify(accountErasureService).purgeExpiredAccounts(180);
+        verify(accountErasureService).purgeExpiredAccountChildren(180);
     }
 
     // -------------------------------------------------------------------------
-    // Logging — no exception when both services return non-zero counts
+    // Delegation to AccountErasureService Tier-2: purgeLegalHoldAccounts
+    // -------------------------------------------------------------------------
+
+    @Test
+    void runDailyPurge_delegatesToPurgeLegalHoldAccountsWithLegalHoldDays() {
+        when(tombstoneGcService.purgeExpiredTombstones(180)).thenReturn(0);
+        when(accountErasureService.purgeExpiredAccountChildren(180)).thenReturn(0);
+        when(accountErasureService.purgeLegalHoldAccounts(365)).thenReturn(0);
+
+        scheduler.runDailyPurge();
+
+        verify(accountErasureService).purgeLegalHoldAccounts(365);
+    }
+
+    // -------------------------------------------------------------------------
+    // Logging — no exception when all services return non-zero counts
     // -------------------------------------------------------------------------
 
     @Test
     void runDailyPurge_doesNotThrowWhenServicesReturnNonZeroCounts() {
         when(tombstoneGcService.purgeExpiredTombstones(180)).thenReturn(42);
-        when(accountErasureService.purgeExpiredAccounts(180)).thenReturn(3);
+        when(accountErasureService.purgeExpiredAccountChildren(180)).thenReturn(3);
+        when(accountErasureService.purgeLegalHoldAccounts(365)).thenReturn(1);
 
-        // Verify no exception is thrown and both calls were made
         scheduler.runDailyPurge();
+
         verify(tombstoneGcService).purgeExpiredTombstones(180);
-        verify(accountErasureService).purgeExpiredAccounts(180);
+        verify(accountErasureService).purgeExpiredAccountChildren(180);
+        verify(accountErasureService).purgeLegalHoldAccounts(365);
     }
 }
