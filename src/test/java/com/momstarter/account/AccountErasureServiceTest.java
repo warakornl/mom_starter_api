@@ -22,6 +22,8 @@ import com.momstarter.reminder.ReminderOccurrenceRepository;
 import com.momstarter.reminder.ReminderRepository;
 import com.momstarter.expense.Expense;
 import com.momstarter.expense.ExpenseRepository;
+import com.momstarter.selflog.SelfLog;
+import com.momstarter.selflog.SelfLogRepository;
 import com.momstarter.supply.SupplyItem;
 import com.momstarter.supply.SupplyItemRepository;
 import org.junit.jupiter.api.Test;
@@ -62,7 +64,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code DataIntegrityViolationException} and the test fails — proving the order is safe.
  *
  * <h2>Strengthened cascade coverage</h2>
- * <p>The Tier-1 cascade test seeds a row in EVERY Tier-1 child table (all 10). If any
+ * <p>The Tier-1 cascade test seeds a row in EVERY Tier-1 child table (all 11, incl. self_log). If any
  * table is accidentally omitted from {@code TIER1_CHILD_DELETE_ORDER}, its row survives
  * after the purge and the corresponding {@code findById} assertion fails — protecting the
  * codebase against future tables (e.g. {@code report_audit}) being forgotten.
@@ -75,7 +77,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Covered scenarios:
  * <ul>
- *   <li><strong>Tier-1:</strong> all 10 child tables purged; users + consent_record retained.</li>
+ *   <li><strong>Tier-1:</strong> all 11 child tables purged (incl. self_log); users + consent_record retained.</li>
  *   <li><strong>Tier-1:</strong> active users (deleted_at IS NULL) are not touched.</li>
  *   <li><strong>Tier-1:</strong> recently-deleted users (within 180d) are not touched.</li>
  *   <li><strong>Tier-1:</strong> correct count across mixed eligibility.</li>
@@ -104,6 +106,7 @@ class AccountErasureServiceTest {
     @Autowired private EmailVerificationTokenRepository emailVerificationTokens;
     @Autowired private RefreshTokenRepository refreshTokens;
     @Autowired private ExpenseRepository expenseItems;
+    @Autowired private SelfLogRepository selfLogRepo;
     @Autowired private SupplyItemRepository supplyItems;
     @Autowired private ReminderRepository reminders;
     @Autowired private ReminderOccurrenceRepository reminderOccurrences;
@@ -115,20 +118,23 @@ class AccountErasureServiceTest {
     // =========================================================================
 
     /**
-     * Tier-1 strengthened cascade test: seeds a row in EVERY Tier-1 child table (all 10)
-     * plus a {@code consent_record}. Verifies that all 10 child-table rows are purged,
-     * while the {@code users} row and {@code consent_record} row are RETAINED.
+     * Tier-1 strengthened cascade test: seeds a row in EVERY Tier-1 child table (all 11,
+     * including self_log) plus a {@code consent_record}. Verifies that all 11 child-table
+     * rows are purged, while the {@code users} row and {@code consent_record} row are RETAINED.
      *
      * <p>If any table is missing from {@code TIER1_CHILD_DELETE_ORDER}, its row survives
      * and the corresponding {@code findById} assertion fails. FK violations on incorrect
      * deletion order would also manifest as a {@code DataIntegrityViolationException}.
+     *
+     * <p>self_log is the F1 fix: its FK → users means omitting it from TIER1_CHILD_DELETE_ORDER
+     * causes the subsequent Tier-2 DELETE users to raise an FK violation — account erasure fails.
      */
     @Test
     void purgeExpiredAccountChildren_tier1_cascadesAllChildTablesAndKeepsUserAndConsentRecord() {
         UUID userId = persistSoftDeletedUser("tier1-cascade@example.com",
                 Instant.now().minus(181, ChronoUnit.DAYS));
 
-        // Seed every Tier-1 child table
+        // Seed every Tier-1 child table (11 tables including self_log — F1 guard)
         UUID profileId      = persistPregnancyProfile(userId);
         UUID authId         = persistAuthIdentity(userId);
         UUID pwdTokenId     = persistPasswordResetToken(userId);
@@ -140,6 +146,7 @@ class AccountErasureServiceTest {
         UUID occurrenceId   = persistReminderOccurrence(userId, reminderId);
         UUID checklistId    = persistChecklistItem(userId);
         UUID kickId         = persistKickCountSession(userId);
+        UUID selfLogId      = persistSelfLog(userId);          // F1: was missing, caused FK break
 
         // Also persist a consent_record — it must NOT be deleted by Tier-1
         UUID consentId = persistConsentRecord(userId);
@@ -151,7 +158,7 @@ class AccountErasureServiceTest {
 
         assertThat(processed).isEqualTo(1);
 
-        // All 11 Tier-1 child rows must be gone
+        // All 12 Tier-1 child rows must be gone (11 child tables + self_log)
         assertThat(profiles.findById(profileId)).isEmpty();
         assertThat(authIdentities.findById(authId)).isEmpty();
         assertThat(passwordResetTokens.findById(pwdTokenId)).isEmpty();
@@ -163,6 +170,9 @@ class AccountErasureServiceTest {
         assertThat(reminderOccurrences.findById(occurrenceId)).isEmpty();
         assertThat(checklistItems.findById(checklistId)).isEmpty();
         assertThat(kickSessions.findById(kickId)).isEmpty();
+        assertThat(selfLogRepo.findById(selfLogId))
+                .as("self_log (F1) — must be purged by Tier-1 to avoid FK break on DELETE users")
+                .isEmpty();
 
         // users row MUST be retained — it is the FK anchor until Tier-2 runs
         assertThat(users.findById(userId))
@@ -440,6 +450,23 @@ class AccountErasureServiceTest {
         s.setMovementCount(10);
         s.setTargetCount(10);
         s.setStatus("completed");
+        return em.persistAndFlush(s).getId();
+    }
+
+    /**
+     * Persists a self_log row for the given user.
+     *
+     * <p>F1 guard: self_log has {@code user_id REFERENCES users(id) ON DELETE RESTRICT}.
+     * A row here must be purged by Tier-1 BEFORE Tier-2 deletes the users row, or the
+     * FK constraint causes erasure to fail with DataIntegrityViolationException.
+     */
+    private UUID persistSelfLog(UUID userId) {
+        SelfLog s = new SelfLog();
+        s.setId(UUID.randomUUID());
+        s.setUserId(userId);
+        s.setMetricType("weight");
+        s.setLoggedAt(LocalDateTime.of(2026, 7, 1, 9, 0));
+        s.setValueNumeric(new byte[]{1, 2, 3});  // non-null to satisfy empty_value guard
         return em.persistAndFlush(s).getId();
     }
 }
