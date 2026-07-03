@@ -15,6 +15,8 @@ import com.momstarter.reminder.ReminderOccurrenceRepository;
 import com.momstarter.reminder.ReminderRepository;
 import com.momstarter.expense.Expense;
 import com.momstarter.expense.ExpenseRepository;
+import com.momstarter.selflog.SelfLog;
+import com.momstarter.selflog.SelfLogRepository;
 import com.momstarter.supply.SupplyItem;
 import com.momstarter.supply.SupplyItemRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -85,6 +87,8 @@ class AccountExportMvcTest {
     @Autowired
     private KickCountSessionRepository kickCountSessions;
     @Autowired
+    private SelfLogRepository selfLogRepo;
+    @Autowired
     private ConsentRecordRepository consentRecords;
     @Autowired
     private JwtService jwtService;
@@ -98,6 +102,7 @@ class AccountExportMvcTest {
         // avoids FK violations within the test transaction.
         consentRecords.deleteAll();
         kickCountSessions.deleteAll();
+        selfLogRepo.deleteAll();
         reminderOccurrences.deleteAll();
         reminders.deleteAll();
         checklistItems.deleteAll();
@@ -143,6 +148,7 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.reminderOccurrences").isArray())
                 .andExpect(jsonPath("$.checklistItems").isArray())
                 .andExpect(jsonPath("$.kickCountSessions").isArray())
+                .andExpect(jsonPath("$.selfLogs").isArray())
                 .andExpect(jsonPath("$.consentHistory").isArray());
     }
 
@@ -186,6 +192,8 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.checklistItems.length()").value(0))
                 .andExpect(jsonPath("$.kickCountSessions").isArray())
                 .andExpect(jsonPath("$.kickCountSessions.length()").value(0))
+                .andExpect(jsonPath("$.selfLogs").isArray())
+                .andExpect(jsonPath("$.selfLogs.length()").value(0))
                 .andExpect(jsonPath("$.consentHistory").isArray())
                 .andExpect(jsonPath("$.consentHistory.length()").value(0));
     }
@@ -447,6 +455,52 @@ class AccountExportMvcTest {
     }
 
     /**
+     * Self-logs included in the PDPA export (ม.30/31) — PDPA F3 fix.
+     *
+     * <p>Self-log health values (weight, BP, etc.) are the user's own health data and
+     * MUST appear in the portability export. The bytea value columns are returned verbatim
+     * (Base64-encoded opaque bytes — MVP posture is plaintext bytes, fully readable).
+     */
+    @Test
+    void selfLogsIncluded() throws Exception {
+        selfLogRepo.saveAndFlush(buildSelfLog(userA.getId(), "weight"));
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.selfLogs.length()").value(1))
+                .andExpect(jsonPath("$.selfLogs[0].metricType").value("weight"))
+                // valueNumeric is a non-null Base64-encoded byte array
+                .andExpect(jsonPath("$.selfLogs[0].valueNumeric").isNotEmpty());
+    }
+
+    /**
+     * Tombstoned self-log rows are included in the export — PDPA ม.30 right to access
+     * covers all records in the pre-GC window, including tombstones (data not yet hard-purged).
+     *
+     * <p>On tombstone, bytea value columns are crypto-shredded to null, so only the
+     * structural sync columns (id, metricType, loggedAt, deletedAt) carry data.
+     */
+    @Test
+    void tombstonedSelfLogsIncludedInExport() throws Exception {
+        SelfLog live = buildSelfLog(userA.getId(), "weight");
+        selfLogRepo.saveAndFlush(live);
+
+        SelfLog tombstoned = buildSelfLog(userA.getId(), "blood_pressure");
+        tombstoned.setValueNumeric(null);     // crypto-shredded on tombstone (PDPA §4.4(A))
+        tombstoned.setValueText(null);
+        tombstoned.setNoteCipher(null);
+        tombstoned.setDeletedAt(Instant.now());
+        selfLogRepo.saveAndFlush(tombstoned);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                // Both live and tombstoned included — user's full data set (PDPA ม.30)
+                .andExpect(jsonPath("$.selfLogs.length()").value(2));
+    }
+
+    /**
      * Tombstoned expenses are included in the export (PDPA ม.30 right to access covers all
      * records in the pre-GC window).
      */
@@ -521,5 +575,16 @@ class AccountExportMvcTest {
         rec.setConsentTextVersion("v1.0-th");
         rec.setLocale("th");
         return rec;
+    }
+
+    private SelfLog buildSelfLog(UUID userId, String metricType) {
+        SelfLog s = new SelfLog();
+        s.setId(UUID.randomUUID());
+        s.setUserId(userId);
+        s.setMetricType(metricType);
+        s.setLoggedAt(java.time.LocalDateTime.of(2026, 7, 1, 9, 0));
+        // MVP posture: plaintext bytes in bytea column (no-op cipher, ADR Option A)
+        s.setValueNumeric(new byte[]{1, 2, 3});
+        return s;
     }
 }

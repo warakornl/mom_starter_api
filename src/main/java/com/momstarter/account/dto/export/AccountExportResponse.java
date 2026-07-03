@@ -89,6 +89,20 @@ public record AccountExportResponse(
         List<KickCountSessionExportEntry> kickCountSessions,
 
         /**
+         * All self-log health records (live + tombstoned). Empty list when none exist.
+         *
+         * <p>MOTHER-health collection (SD-5): weight, blood_pressure, swelling, lochia, symptom.
+         * All four bytea value columns ({@code valueNumeric}, {@code valueNumericSecondary},
+         * {@code valueText}, {@code noteCipher}) are included verbatim as Base64-encoded bytes
+         * (F3 fix — PDPA ม.30 portability requires access to the actual health measurements).
+         *
+         * <p>Under the MVP no-op cipher posture, these bytes are plaintext-readable.
+         * On tombstoned rows, the bytea columns are {@code null} (crypto-shredded on tombstone
+         * per §4.4(A) / PDPA ruling 5a); only structural sync columns survive.
+         */
+        List<SelfLogExportEntry> selfLogs,
+
+        /**
          * Full append-only consent audit history (all rows). Empty list when none exist.
          * Ordered ascending by grantedAt so the history reads chronologically.
          */

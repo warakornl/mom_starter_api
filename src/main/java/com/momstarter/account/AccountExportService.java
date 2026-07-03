@@ -9,6 +9,7 @@ import com.momstarter.account.dto.export.KickCountSessionExportEntry;
 import com.momstarter.account.dto.export.PregnancyProfileExportEntry;
 import com.momstarter.account.dto.export.ReminderExportEntry;
 import com.momstarter.account.dto.export.ReminderOccurrenceExportEntry;
+import com.momstarter.account.dto.export.SelfLogExportEntry;
 import com.momstarter.account.dto.export.SupplyItemExportEntry;
 import com.momstarter.checklist.ChecklistItemRepository;
 import com.momstarter.consent.ConsentRecordRepository;
@@ -19,6 +20,7 @@ import com.momstarter.pregnancy.PregnancyProfile;
 import com.momstarter.pregnancy.PregnancyProfileRepository;
 import com.momstarter.reminder.ReminderOccurrenceRepository;
 import com.momstarter.reminder.ReminderRepository;
+import com.momstarter.selflog.SelfLogRepository;
 import com.momstarter.supply.SupplyItemRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +44,7 @@ import java.util.UUID;
  *   <li>ReminderOccurrences — all rows (live + tombstoned)</li>
  *   <li>ChecklistItems — all rows (live + tombstoned)</li>
  *   <li>KickCountSessions — all rows (live + tombstoned); {@code noteCipher} excluded</li>
+ *   <li>SelfLogs — all rows (live + tombstoned); all bytea value columns included (F3 fix)</li>
  *   <li>ConsentHistory — full append-only audit log, chronological</li>
  * </ul>
  *
@@ -76,6 +79,7 @@ public class AccountExportService {
     private final ReminderOccurrenceRepository reminderOccurrences;
     private final ChecklistItemRepository checklistItems;
     private final KickCountSessionRepository kickCountSessions;
+    private final SelfLogRepository selfLogs;
     private final ConsentRecordRepository consentRecords;
 
     public AccountExportService(
@@ -87,6 +91,7 @@ public class AccountExportService {
             ReminderOccurrenceRepository reminderOccurrences,
             ChecklistItemRepository checklistItems,
             KickCountSessionRepository kickCountSessions,
+            SelfLogRepository selfLogs,
             ConsentRecordRepository consentRecords) {
         this.users = users;
         this.profiles = profiles;
@@ -96,6 +101,7 @@ public class AccountExportService {
         this.reminderOccurrences = reminderOccurrences;
         this.checklistItems = checklistItems;
         this.kickCountSessions = kickCountSessions;
+        this.selfLogs = selfLogs;
         this.consentRecords = consentRecords;
     }
 
@@ -206,6 +212,22 @@ public class AccountExportService {
                         s.getCreatedAt(), s.getUpdatedAt(), s.getDeletedAt()))
                 .toList();
 
+        // ---- self-logs ---- (F3 fix: PDPA ม.30/31 portability — health values included)
+        // All four bytea value columns are mapped verbatim (Base64 on the wire via Jackson).
+        // Under the MVP no-op cipher, values are plaintext-readable. On tombstoned rows,
+        // the bytea columns are null (crypto-shredded per §4.4(A) / PDPA ruling 5a).
+        // No health data is logged — only user id and export timestamp (no-PII-in-logs rule).
+        List<SelfLogExportEntry> selfLogEntries = selfLogs
+                .findAllByUserIdForExport(userId)
+                .stream()
+                .map(s -> new SelfLogExportEntry(
+                        s.getId(), s.getMetricType(),
+                        s.getValueNumeric(), s.getValueNumericSecondary(),
+                        s.getValueText(), s.getNoteCipher(),
+                        s.getUnit(), s.getLoggedAt(),
+                        s.getCreatedAt(), s.getUpdatedAt(), s.getDeletedAt()))
+                .toList();
+
         // ---- consent history ----
         List<ConsentHistoryExportEntry> consentEntries = consentRecords
                 .findAllByUserIdForExport(userId)
@@ -226,6 +248,7 @@ public class AccountExportService {
                 occurrenceEntries,
                 checklistEntries,
                 sessionEntries,
+                selfLogEntries,
                 consentEntries);
     }
 

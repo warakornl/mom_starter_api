@@ -173,4 +173,23 @@ public interface SelfLogRepository extends JpaRepository<SelfLog, UUID> {
                                           @Param("cursorLoggedAt") LocalDateTime cursorLoggedAt,
                                           @Param("cursorId") UUID cursorId,
                                           Pageable pageable);
+
+    // -------------------------------------------------------------------------
+    // PDPA ม.30/31 — data export (all records, including tombstones)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns ALL self-logs for the given user including soft-deleted tombstones.
+     *
+     * <p>Used exclusively by the {@code GET /account/export} path (PDPA ม.30/31 portability).
+     * Tombstoned rows are included: the user's right to access covers all records in the
+     * pre-GC window, including those whose value columns have been crypto-shredded to null.
+     * Ordered by {@code (updated_at ASC, id ASC)} for deterministic output.
+     *
+     * <p>The server NEVER filters or predicates over the {@code bytea} value columns
+     * (INV-S2 / G4 — opaque ciphertext / plaintext-bytes; ADR Decision 1).
+     */
+    @Query("SELECT s FROM SelfLog s WHERE s.userId = :userId " +
+           "ORDER BY s.updatedAt ASC, s.id ASC")
+    List<SelfLog> findAllByUserIdForExport(@Param("userId") UUID userId);
 }
