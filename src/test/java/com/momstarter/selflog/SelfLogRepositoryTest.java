@@ -11,6 +11,9 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 
+import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -38,6 +41,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>GET /self-logs cursor: {@link SelfLogRepository#findForReadAfterCursor} continues paging.</li>
  *   <li>Soft-deleted rows excluded from {@code findForRead} but present in {@code findForPull}.</li>
  *   <li>DB CHECK rejects invalid {@code metric_type}.</li>
+ *   <li>findForReadAfterCursor DESC tie-break: two rows share the same {@code loggedAt}; cursor
+ *       at the higher-id row yields the lower-id row first on the next page (pins line 167 branch
+ *       {@code s.loggedAt = :cursorLoggedAt AND s.id < :cursorId}).</li>
+ *   <li>findForPullAfterCursor ASC tie-break: two rows share the same {@code updatedAt} (batch push);
+ *       cursor at the lower-id row yields the higher-id row first on the next page (pins line 99 branch
+ *       {@code s.updatedAt = :cursorUpdatedAt AND s.id > :cursorId}). Strengthens the existing
+ *       {@code noneMatch} assertion with exact membership + order.</li>
  * </ul>
  */
 @DataJpaTest
@@ -51,6 +61,9 @@ class SelfLogRepositoryTest {
 
     @Autowired
     private UserRepository users;
+
+    @Autowired
+    private TestEntityManager testEntityManager;
 
     // -------------------------------------------------------------------------
     // Helpers
@@ -448,5 +461,124 @@ class SelfLogRepositoryTest {
         assertThat(saved.getDeletedAt()).isNull();
         assertThat(saved.getClientId()).isEqualTo(deviceId);
         assertThat(saved.getVersion()).isNotNull();
+    }
+
+    // -------------------------------------------------------------------------
+    // 11. findForReadAfterCursor tie-break — equal loggedAt, id DESC keyset (pins line 167)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void findForReadAfterCursor_tieBreak_sameLoggedAt() {
+        // Pins the tie-break branch: s.loggedAt = :cursorLoggedAt AND s.id < :cursorId
+        // (SelfLogRepository.java line 167 — never hit by the all-distinct-loggedAt tests above).
+        //
+        // Realistic scenario: two blood-pressure readings logged within the same minute share an
+        // identical loggedAt (minute-precision floating-civil). Full DESC order at the shared
+        // loggedAt is (higher-id first), so the higher-id row lands on page 1. Setting the cursor
+        // at that row must yield the lower-id row as the FIRST item on page 2 via the tie-break,
+        // with no row skipped or duplicated across the page boundary.
+        User user = savedUser("sl-tiebreak-read@example.com");
+
+        // Fixed UUIDs guarantee deterministic 128-bit ordering: tiedLowId < tiedHighId.
+        UUID tiedLowId  = UUID.fromString("10000000-0000-0000-0000-000000000001");
+        UUID tiedHighId = UUID.fromString("20000000-0000-0000-0000-000000000002");
+
+        LocalDateTime sharedLoggedAt = LocalDateTime.of(2026, 7, 5, 9, 0);
+
+        SelfLog newer    = buildLog(user.getId(), "weight", LocalDateTime.of(2026, 7, 10, 9, 0));
+        SelfLog tiedHigh = buildLog(user.getId(), "weight", sharedLoggedAt);
+        SelfLog tiedLow  = buildLog(user.getId(), "weight", sharedLoggedAt);
+        SelfLog older    = buildLog(user.getId(), "weight", LocalDateTime.of(2026, 7,  1, 9, 0));
+
+        tiedHigh.setId(tiedHighId);
+        tiedLow.setId(tiedLowId);
+
+        logs.saveAll(List.of(newer, tiedHigh, tiedLow, older));
+        logs.flush();
+
+        // Full DESC page order: [newer, tiedHigh, tiedLow, older].
+        // Cursor at tiedHigh (higher-id at the shared loggedAt — end of page 1).
+        // Expected page 2: tiedLow first (tie-break branch), then older (distinct earlier loggedAt).
+        List<SelfLog> page2 = logs.findForReadAfterCursor(
+                user.getId(), null, null, null,
+                sharedLoggedAt, tiedHighId,
+                Pageable.ofSize(100));
+
+        // Exact membership and order — the tie-break branch must yield tiedLow before older.
+        assertThat(page2).hasSize(2);
+        assertThat(page2.get(0).getId()).isEqualTo(tiedLowId);     // same-loggedAt lower-id: tie-break
+        assertThat(page2.get(1).getId()).isEqualTo(older.getId()); // distinct earlier loggedAt
+
+        // Page 1 rows must not leak into page 2 — no skip, no duplicate across the boundary.
+        assertThat(page2).noneMatch(sl -> sl.getId().equals(newer.getId()));
+        assertThat(page2).noneMatch(sl -> sl.getId().equals(tiedHighId));
+    }
+
+    // -------------------------------------------------------------------------
+    // 12. findForPullAfterCursor tie-break — equal updatedAt, id ASC keyset (pins line 99)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void findForPullAfterCursor_tieBreak_sameUpdatedAt() {
+        // Pins the tie-break branch: s.updatedAt = :cursorUpdatedAt AND s.id > :cursorId
+        // (SelfLogRepository.java line 99 — effectively untested by the existing noneMatch-only test).
+        //
+        // Realistic scenario: a batch sync/push stamps many rows with the same server-assigned
+        // updated_at. Full ASC order at the shared updatedAt is (lower-id first), so the lower-id
+        // row is the cursor. The next page must begin with the same-updatedAt higher-id row via the
+        // tie-break, with no row skipped or duplicated.
+        //
+        // updated_at is server-controlled (@PrePersist / @PreUpdate), so identical values are forced
+        // via native SQL after the initial inserts. em.clear() evicts the JPA L1 cache so the
+        // subsequent repository query reads fresh values from the database.
+        User user = savedUser("sl-tiebreak-pull@example.com");
+
+        // Fixed UUIDs guarantee deterministic 128-bit ordering: tiedLowId < tiedHighId.
+        UUID tiedLowId  = UUID.fromString("10000000-0000-0000-0000-000000000001");
+        UUID tiedHighId = UUID.fromString("20000000-0000-0000-0000-000000000002");
+
+        SelfLog beforeTied = buildLog(user.getId());
+        SelfLog tiedLow    = buildLog(user.getId());
+        SelfLog tiedHigh   = buildLog(user.getId());
+        SelfLog afterTied  = buildLog(user.getId());
+
+        tiedLow.setId(tiedLowId);
+        tiedHigh.setId(tiedHighId);
+
+        logs.saveAll(List.of(beforeTied, tiedLow, tiedHigh, afterTied));
+        logs.flush(); // flush JPA inserts to DB before native override
+
+        // Force controlled updated_at so two rows share the exact same instant (batch-push scenario).
+        Instant tShared = Instant.parse("2020-01-01T12:00:00Z");
+        Instant tEarly  = Instant.parse("2020-01-01T10:00:00Z");
+        Instant tLate   = Instant.parse("2020-01-01T14:00:00Z");
+
+        jakarta.persistence.EntityManager em = testEntityManager.getEntityManager();
+        em.createNativeQuery("UPDATE self_log SET updated_at = ? WHERE id = ?")
+                .setParameter(1, Timestamp.from(tShared)).setParameter(2, tiedLowId).executeUpdate();
+        em.createNativeQuery("UPDATE self_log SET updated_at = ? WHERE id = ?")
+                .setParameter(1, Timestamp.from(tShared)).setParameter(2, tiedHighId).executeUpdate();
+        em.createNativeQuery("UPDATE self_log SET updated_at = ? WHERE id = ?")
+                .setParameter(1, Timestamp.from(tEarly)).setParameter(2, beforeTied.getId()).executeUpdate();
+        em.createNativeQuery("UPDATE self_log SET updated_at = ? WHERE id = ?")
+                .setParameter(1, Timestamp.from(tLate)).setParameter(2, afterTied.getId()).executeUpdate();
+        em.clear(); // evict L1 cache so the repository reads overridden updated_at values
+
+        // Full ASC page order: [beforeTied(T_early), tiedLow(T_shared), tiedHigh(T_shared), afterTied(T_late)].
+        // Cursor at tiedLow (updatedAt=T_shared, id=tiedLowId).
+        // Expected page 2: tiedHigh first (tie-break branch), then afterTied (strictly later updatedAt).
+        List<SelfLog> page2 = logs.findForPullAfterCursor(
+                user.getId(), Instant.EPOCH,
+                tShared, tiedLowId,
+                Pageable.ofSize(100));
+
+        // Exact membership and order — strengthens the existing noneMatch-only assertion.
+        assertThat(page2).hasSize(2);
+        assertThat(page2.get(0).getId()).isEqualTo(tiedHighId);       // same-updatedAt higher-id: tie-break
+        assertThat(page2.get(1).getId()).isEqualTo(afterTied.getId()); // strictly later updatedAt
+
+        // Rows before or at the cursor must not appear — no skip, no duplicate.
+        assertThat(page2).noneMatch(sl -> sl.getId().equals(tiedLowId));
+        assertThat(page2).noneMatch(sl -> sl.getId().equals(beforeTied.getId()));
     }
 }
