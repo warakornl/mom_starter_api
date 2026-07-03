@@ -6,6 +6,8 @@ import com.momstarter.account.dto.export.ChecklistItemExportEntry;
 import com.momstarter.account.dto.export.ConsentHistoryExportEntry;
 import com.momstarter.account.dto.export.ExpenseExportEntry;
 import com.momstarter.account.dto.export.KickCountSessionExportEntry;
+import com.momstarter.account.dto.export.MedicationLogExportEntry;
+import com.momstarter.account.dto.export.MedicationPlanExportEntry;
 import com.momstarter.account.dto.export.PregnancyProfileExportEntry;
 import com.momstarter.account.dto.export.ReminderExportEntry;
 import com.momstarter.account.dto.export.ReminderOccurrenceExportEntry;
@@ -16,6 +18,8 @@ import com.momstarter.consent.ConsentRecordRepository;
 import com.momstarter.expense.ExpenseRepository;
 import com.momstarter.error.ApiException;
 import com.momstarter.kickcount.KickCountSessionRepository;
+import com.momstarter.medication.MedicationLogRepository;
+import com.momstarter.medication.MedicationPlanRepository;
 import com.momstarter.pregnancy.PregnancyProfile;
 import com.momstarter.pregnancy.PregnancyProfileRepository;
 import com.momstarter.reminder.ReminderOccurrenceRepository;
@@ -45,6 +49,8 @@ import java.util.UUID;
  *   <li>ChecklistItems — all rows (live + tombstoned)</li>
  *   <li>KickCountSessions — all rows (live + tombstoned); {@code noteCipher} excluded</li>
  *   <li>SelfLogs — all rows (live + tombstoned); all bytea value columns included (F3 fix)</li>
+ *   <li>MedicationPlans — all rows (live + tombstoned); nameCipher/doseCipher/scheduleRule included</li>
+ *   <li>MedicationLogs — all rows (live + tombstoned); noteCipher included</li>
  *   <li>ConsentHistory — full append-only audit log, chronological</li>
  * </ul>
  *
@@ -80,6 +86,8 @@ public class AccountExportService {
     private final ChecklistItemRepository checklistItems;
     private final KickCountSessionRepository kickCountSessions;
     private final SelfLogRepository selfLogs;
+    private final MedicationPlanRepository medicationPlans;
+    private final MedicationLogRepository medicationLogs;
     private final ConsentRecordRepository consentRecords;
 
     public AccountExportService(
@@ -92,6 +100,8 @@ public class AccountExportService {
             ChecklistItemRepository checklistItems,
             KickCountSessionRepository kickCountSessions,
             SelfLogRepository selfLogs,
+            MedicationPlanRepository medicationPlans,
+            MedicationLogRepository medicationLogs,
             ConsentRecordRepository consentRecords) {
         this.users = users;
         this.profiles = profiles;
@@ -102,6 +112,8 @@ public class AccountExportService {
         this.checklistItems = checklistItems;
         this.kickCountSessions = kickCountSessions;
         this.selfLogs = selfLogs;
+        this.medicationPlans = medicationPlans;
+        this.medicationLogs = medicationLogs;
         this.consentRecords = consentRecords;
     }
 
@@ -228,6 +240,34 @@ public class AccountExportService {
                         s.getCreatedAt(), s.getUpdatedAt(), s.getDeletedAt()))
                 .toList();
 
+        // ---- medication plans ---- (Task 5: SD-2 health data — PDPA ม.30/31 portability)
+        // nameCipher and doseCipher are mapped verbatim (Base64 on the wire via Jackson).
+        // scheduleRule (FLAG-4 JSON) is included: the user's medication schedule is their data.
+        // On tombstoned rows, nameCipher and doseCipher are null (crypto-shredded per §4.4(A)).
+        // No health data is logged (no-PII-in-logs rule).
+        List<MedicationPlanExportEntry> medicationPlanEntries = medicationPlans
+                .findAllByUserIdForExport(userId)
+                .stream()
+                .map(p -> new MedicationPlanExportEntry(
+                        p.getId(), p.getNameCipher(), p.getDoseCipher(),
+                        p.getScheduleRule(), p.isActive(), p.getSourceSuggestionStateId(),
+                        p.getCreatedAt(), p.getUpdatedAt(), p.getDeletedAt()))
+                .toList();
+
+        // ---- medication logs ---- (Task 5: SD-2 health data — PDPA ม.30/31 portability)
+        // noteCipher is mapped verbatim (Base64 on the wire via Jackson).
+        // occurrenceTime is floating-civil (FLAG-1); loggedAt is server-UTC (D5).
+        // On tombstoned rows, noteCipher is null (crypto-shredded per §4.4(A)).
+        List<MedicationLogExportEntry> medicationLogEntries = medicationLogs
+                .findAllByUserIdForExport(userId)
+                .stream()
+                .map(l -> new MedicationLogExportEntry(
+                        l.getId(), l.getMedicationPlanId(),
+                        l.getOccurrenceTime(), l.getStatus(), l.getLoggedAt(),
+                        l.getNoteCipher(),
+                        l.getCreatedAt(), l.getUpdatedAt(), l.getDeletedAt()))
+                .toList();
+
         // ---- consent history ----
         List<ConsentHistoryExportEntry> consentEntries = consentRecords
                 .findAllByUserIdForExport(userId)
@@ -249,6 +289,8 @@ public class AccountExportService {
                 checklistEntries,
                 sessionEntries,
                 selfLogEntries,
+                medicationPlanEntries,
+                medicationLogEntries,
                 consentEntries);
     }
 

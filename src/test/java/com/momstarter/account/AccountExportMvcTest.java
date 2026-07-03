@@ -15,6 +15,10 @@ import com.momstarter.reminder.ReminderOccurrenceRepository;
 import com.momstarter.reminder.ReminderRepository;
 import com.momstarter.expense.Expense;
 import com.momstarter.expense.ExpenseRepository;
+import com.momstarter.medication.MedicationLog;
+import com.momstarter.medication.MedicationLogRepository;
+import com.momstarter.medication.MedicationPlan;
+import com.momstarter.medication.MedicationPlanRepository;
 import com.momstarter.selflog.SelfLog;
 import com.momstarter.selflog.SelfLogRepository;
 import com.momstarter.supply.SupplyItem;
@@ -89,6 +93,10 @@ class AccountExportMvcTest {
     @Autowired
     private SelfLogRepository selfLogRepo;
     @Autowired
+    private MedicationPlanRepository medicationPlanRepo;
+    @Autowired
+    private MedicationLogRepository medicationLogRepo;
+    @Autowired
     private ConsentRecordRepository consentRecords;
     @Autowired
     private JwtService jwtService;
@@ -103,6 +111,8 @@ class AccountExportMvcTest {
         consentRecords.deleteAll();
         kickCountSessions.deleteAll();
         selfLogRepo.deleteAll();
+        medicationLogRepo.deleteAll();   // FK → medication_plan + users; must precede both
+        medicationPlanRepo.deleteAll();  // FK → users; must precede users
         reminderOccurrences.deleteAll();
         reminders.deleteAll();
         checklistItems.deleteAll();
@@ -149,6 +159,8 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.checklistItems").isArray())
                 .andExpect(jsonPath("$.kickCountSessions").isArray())
                 .andExpect(jsonPath("$.selfLogs").isArray())
+                .andExpect(jsonPath("$.medicationPlans").isArray())
+                .andExpect(jsonPath("$.medicationLogs").isArray())
                 .andExpect(jsonPath("$.consentHistory").isArray());
     }
 
@@ -194,6 +206,10 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.kickCountSessions.length()").value(0))
                 .andExpect(jsonPath("$.selfLogs").isArray())
                 .andExpect(jsonPath("$.selfLogs.length()").value(0))
+                .andExpect(jsonPath("$.medicationPlans").isArray())
+                .andExpect(jsonPath("$.medicationPlans.length()").value(0))
+                .andExpect(jsonPath("$.medicationLogs").isArray())
+                .andExpect(jsonPath("$.medicationLogs.length()").value(0))
                 .andExpect(jsonPath("$.consentHistory").isArray())
                 .andExpect(jsonPath("$.consentHistory.length()").value(0));
     }
@@ -593,5 +609,141 @@ class AccountExportMvcTest {
         // MVP posture: plaintext bytes in bytea column (no-op cipher, ADR Option A)
         s.setValueNumeric(new byte[]{1, 2, 3});
         return s;
+    }
+
+    // -------------------------------------------------------------------------
+    // MEDICATION PLANS — PDPA ม.30/31 export (SD-2 health data, Slice 2 Task 5)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Medication plans (live) must appear in the PDPA export.
+     * nameCipher and doseCipher are included verbatim (Base64) per the export contract.
+     * scheduleRule is included as a JSON string.
+     */
+    @Test
+    void medicationPlansIncluded() throws Exception {
+        MedicationPlan plan = buildMedicationPlan(userA.getId(),
+                new byte[]{10, 20, 30},   // nameCipher (plaintext bytes under MVP posture)
+                "{\"freq\":\"daily\",\"startAt\":\"2026-07-01T08:00\"}");
+        medicationPlanRepo.saveAndFlush(plan);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.medicationPlans.length()").value(1))
+                .andExpect(jsonPath("$.medicationPlans[0].scheduleRule")
+                        .value("{\"freq\":\"daily\",\"startAt\":\"2026-07-01T08:00\"}"))
+                .andExpect(jsonPath("$.medicationPlans[0].active").value(true))
+                // nameCipher is non-null: must appear as Base64 string
+                .andExpect(jsonPath("$.medicationPlans[0].nameCipher").isNotEmpty());
+    }
+
+    /**
+     * Tombstoned medication plan rows are included in the export (PDPA ม.30 pre-GC window).
+     * On tombstone, nameCipher and doseCipher are crypto-shredded to null (§4.4(A)).
+     */
+    @Test
+    void tombstonedMedicationPlansIncludedInExport() throws Exception {
+        MedicationPlan live = buildMedicationPlan(userA.getId(),
+                new byte[]{1, 2, 3}, null);
+        medicationPlanRepo.saveAndFlush(live);
+
+        MedicationPlan tombstoned = buildMedicationPlan(userA.getId(),
+                null, null);
+        tombstoned.setDeletedAt(Instant.now()); // tombstone
+        // nameCipher = null is legal for tombstone (CHECK constraint allows it)
+        medicationPlanRepo.saveAndFlush(tombstoned);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                // Both live and tombstoned included (PDPA ม.30)
+                .andExpect(jsonPath("$.medicationPlans.length()").value(2));
+    }
+
+    // -------------------------------------------------------------------------
+    // MEDICATION LOGS — PDPA ม.30/31 export (SD-2 health data, Slice 2 Task 5)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Medication logs (live) must appear in the PDPA export.
+     * noteCipher is included verbatim (Base64). status, occurrenceTime, medicationPlanId
+     * and loggedAt are all present.
+     */
+    @Test
+    void medicationLogsIncluded() throws Exception {
+        MedicationPlan plan = buildMedicationPlan(userA.getId(),
+                new byte[]{1, 2, 3}, null);
+        medicationPlanRepo.saveAndFlush(plan);
+
+        MedicationLog log = buildMedicationLog(userA.getId(), plan.getId(),
+                "taken", LocalDateTime.of(2026, 7, 1, 9, 0),
+                new byte[]{7, 8, 9});
+        medicationLogRepo.saveAndFlush(log);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.medicationLogs.length()").value(1))
+                .andExpect(jsonPath("$.medicationLogs[0].status").value("taken"))
+                .andExpect(jsonPath("$.medicationLogs[0].medicationPlanId")
+                        .value(plan.getId().toString()))
+                // noteCipher is non-null: appears as Base64
+                .andExpect(jsonPath("$.medicationLogs[0].noteCipher").isNotEmpty());
+    }
+
+    /**
+     * Tombstoned medication log rows are included in the export (PDPA ม.30 pre-GC window).
+     * On tombstone, noteCipher is crypto-shredded to null (§4.4(A)).
+     */
+    @Test
+    void tombstonedMedicationLogsIncludedInExport() throws Exception {
+        MedicationPlan plan = buildMedicationPlan(userA.getId(),
+                new byte[]{1, 2, 3}, null);
+        medicationPlanRepo.saveAndFlush(plan);
+
+        MedicationLog live = buildMedicationLog(userA.getId(), plan.getId(),
+                "taken", LocalDateTime.of(2026, 7, 1, 9, 0), new byte[]{1, 2, 3});
+        medicationLogRepo.saveAndFlush(live);
+
+        MedicationLog tombstoned = buildMedicationLog(userA.getId(), null,
+                "missed", LocalDateTime.of(2026, 7, 2, 9, 0), null);
+        tombstoned.setNoteCipher(null);   // crypto-shredded on tombstone
+        tombstoned.setDeletedAt(Instant.now());
+        medicationLogRepo.saveAndFlush(tombstoned);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                // Both live and tombstoned included (PDPA ม.30)
+                .andExpect(jsonPath("$.medicationLogs.length()").value(2));
+    }
+
+    // -------------------------------------------------------------------------
+    // Medication helpers
+    // -------------------------------------------------------------------------
+
+    private MedicationPlan buildMedicationPlan(UUID userId, byte[] nameCipher,
+                                                String scheduleRule) {
+        MedicationPlan p = new MedicationPlan();
+        p.setId(UUID.randomUUID());
+        p.setUserId(userId);
+        p.setNameCipher(nameCipher);   // null only for tombstones (§4.4(A))
+        p.setScheduleRule(scheduleRule);
+        p.setActive(true);
+        return p;
+    }
+
+    private MedicationLog buildMedicationLog(UUID userId, UUID medicationPlanId,
+                                              String status, LocalDateTime occurrenceTime,
+                                              byte[] noteCipher) {
+        MedicationLog l = new MedicationLog();
+        l.setId(UUID.randomUUID());
+        l.setUserId(userId);
+        l.setMedicationPlanId(medicationPlanId);
+        l.setStatus(status);
+        l.setOccurrenceTime(occurrenceTime);
+        l.setNoteCipher(noteCipher);
+        return l;
     }
 }

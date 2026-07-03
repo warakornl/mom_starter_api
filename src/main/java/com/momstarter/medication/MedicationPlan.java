@@ -61,8 +61,19 @@ import java.util.UUID;
  * {@link #nameCipher} and {@link #doseCipher} to {@code null}.
  *
  * <h3>Tier-1 erasure (RULING 4)</h3>
- * <p>Registered in {@code AccountErasureService.TIER1_CHILD_DELETE_ORDER} AFTER
- * {@code medication_log} (which references this table via a hard FK) and BEFORE {@code users}.
+ * <p>Registered in {@link com.momstarter.account.AccountErasureService#TIER1_CHILD_DELETE_ORDER}
+ * AFTER {@code medication_log} (which references this table via a hard FK) and BEFORE {@code users}.
+ * This FK order is critical: deleting {@code medication_plan} before {@code medication_log} raises
+ * {@code DataIntegrityViolationException} and breaks account erasure.</p>
+ *
+ * <h3>Tombstone GC</h3>
+ * <p>Registered in {@link com.momstarter.sync.TombstoneGcService#PURGE_TABLES}.
+ * Tombstoned plans are hard-purged after the 180-day tombstone TTL (PDPA ม.33 / §4.4).</p>
+ *
+ * <h3>PDPA ม.30/31 export</h3>
+ * <p>Included in the {@code GET /account/export} response via {@code AccountExportService}.
+ * {@code nameCipher}, {@code doseCipher}, and {@code scheduleRule} are all exported.
+ * Tombstoned rows are included (pre-GC window — user's right to access covers all records).</p>
  */
 @Entity
 @Table(name = "medication_plan")

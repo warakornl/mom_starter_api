@@ -103,6 +103,31 @@ public record AccountExportResponse(
         List<SelfLogExportEntry> selfLogs,
 
         /**
+         * All medication plans (live + tombstoned). Empty list when none exist.
+         *
+         * <p>SD-2 health collection: medication schedule records.
+         * {@code nameCipher} and {@code doseCipher} are included verbatim as Base64-encoded
+         * bytes (PDPA ม.30 — the user has the right to access their medication schedule).
+         * {@code scheduleRule} is the FLAG-4 recurrence grammar (JSON string).
+         *
+         * <p>On tombstoned rows, {@code nameCipher}/{@code doseCipher} are {@code null}
+         * (crypto-shredded per §4.4(A)); structural fields survive.
+         */
+        List<MedicationPlanExportEntry> medicationPlans,
+
+        /**
+         * All medication logs / dose-event records (live + tombstoned). Empty list when none exist.
+         *
+         * <p>SD-2 health collection: taken/missed dose events.
+         * {@code noteCipher} is included verbatim as Base64-encoded bytes (PDPA ม.30 portability).
+         * {@code occurrenceTime} is floating-civil (FLAG-1); {@code loggedAt} is server-UTC (D5).
+         *
+         * <p>On tombstoned rows, {@code noteCipher} is {@code null} (crypto-shredded per §4.4(A));
+         * structural fields survive.
+         */
+        List<MedicationLogExportEntry> medicationLogs,
+
+        /**
          * Full append-only consent audit history (all rows). Empty list when none exist.
          * Ordered ascending by grantedAt so the history reads chronologically.
          */

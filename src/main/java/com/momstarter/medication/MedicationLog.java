@@ -50,9 +50,18 @@ import java.util.UUID;
  * <p>On tombstone, the apply path MUST set {@link #noteCipher} to {@code null}.
  *
  * <h3>Tier-1 erasure (RULING 4)</h3>
- * <p>Registered in {@code AccountErasureService.TIER1_CHILD_DELETE_ORDER} BEFORE
- * {@code medication_plan} (this table references it via a hard FK — deleting plans first
- * would FK-violate surviving log rows).
+ * <p>Registered in {@link com.momstarter.account.AccountErasureService#TIER1_CHILD_DELETE_ORDER}
+ * BEFORE {@code medication_plan} (this table has a hard FK into {@code medication_plan(id)} —
+ * deleting {@code medication_plan} first would FK-violate surviving log rows and break account erasure).
+ *
+ * <h3>Tombstone GC</h3>
+ * <p>Registered in {@link com.momstarter.sync.TombstoneGcService#PURGE_TABLES}.
+ * Tombstoned logs are hard-purged after the 180-day tombstone TTL (PDPA ม.33 / §4.4).
+ *
+ * <h3>PDPA ม.30/31 export</h3>
+ * <p>Included in the {@code GET /account/export} response via {@code AccountExportService}.
+ * {@code noteCipher}, {@code occurrenceTime}, {@code status}, {@code loggedAt}, and
+ * {@code medicationPlanId} are all exported. Tombstoned rows are included (pre-GC window).
  */
 @Entity
 @Table(name = "medication_log")
