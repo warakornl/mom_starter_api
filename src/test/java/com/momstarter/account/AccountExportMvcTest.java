@@ -130,7 +130,8 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.exportedAt").isString())
                 .andExpect(jsonPath("$.account").exists())
                 .andExpect(jsonPath("$.account.email").value("export-a@example.com"))
-                .andExpect(jsonPath("$.pregnancyProfile").isEmpty())  // null is fine for optional
+                // pregnancyProfile absent from JSON when null (@JsonInclude NON_NULL)
+                .andExpect(jsonPath("$.pregnancyProfile").doesNotExist())
                 .andExpect(jsonPath("$.supplyItems").isArray())
                 .andExpect(jsonPath("$.reminders").isArray())
                 .andExpect(jsonPath("$.reminderOccurrences").isArray())
