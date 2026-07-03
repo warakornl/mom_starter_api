@@ -56,6 +56,12 @@ public record AccountExportResponse(
         List<SupplyItemExportEntry> supplyItems,
 
         /**
+         * All expense records (live + tombstoned). Empty list when none exist.
+         * Non-health personal-financial data (expenses-ui.md §0).
+         */
+        List<ExpenseExportEntry> expenses,
+
+        /**
          * All reminder definitions (live + tombstoned). Empty list when none exist.
          */
         List<ReminderExportEntry> reminders,

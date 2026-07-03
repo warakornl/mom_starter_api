@@ -13,6 +13,8 @@ import com.momstarter.reminder.Reminder;
 import com.momstarter.reminder.ReminderOccurrence;
 import com.momstarter.reminder.ReminderOccurrenceRepository;
 import com.momstarter.reminder.ReminderRepository;
+import com.momstarter.expense.Expense;
+import com.momstarter.expense.ExpenseRepository;
 import com.momstarter.supply.SupplyItem;
 import com.momstarter.supply.SupplyItemRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,6 +73,8 @@ class AccountExportMvcTest {
     @Autowired
     private PregnancyProfileRepository profiles;
     @Autowired
+    private ExpenseRepository expenseRepo;
+    @Autowired
     private SupplyItemRepository supplyItems;
     @Autowired
     private ReminderRepository reminders;
@@ -97,6 +101,7 @@ class AccountExportMvcTest {
         reminderOccurrences.deleteAll();
         reminders.deleteAll();
         checklistItems.deleteAll();
+        expenseRepo.deleteAll();
         supplyItems.deleteAll();
         profiles.deleteAll();
         users.deleteAll();
@@ -133,6 +138,7 @@ class AccountExportMvcTest {
                 // pregnancyProfile absent from JSON when null (@JsonInclude NON_NULL)
                 .andExpect(jsonPath("$.pregnancyProfile").doesNotExist())
                 .andExpect(jsonPath("$.supplyItems").isArray())
+                .andExpect(jsonPath("$.expenses").isArray())
                 .andExpect(jsonPath("$.reminders").isArray())
                 .andExpect(jsonPath("$.reminderOccurrences").isArray())
                 .andExpect(jsonPath("$.checklistItems").isArray())
@@ -170,6 +176,8 @@ class AccountExportMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.supplyItems").isArray())
                 .andExpect(jsonPath("$.supplyItems.length()").value(0))
+                .andExpect(jsonPath("$.expenses").isArray())
+                .andExpect(jsonPath("$.expenses.length()").value(0))
                 .andExpect(jsonPath("$.reminders").isArray())
                 .andExpect(jsonPath("$.reminders.length()").value(0))
                 .andExpect(jsonPath("$.reminderOccurrences").isArray())
@@ -422,9 +430,54 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.supplyItems.length()").value(2));
     }
 
+    /**
+     * Expenses included in the PDPA export (ม.30/31).
+     */
+    @Test
+    void expensesIncluded() throws Exception {
+        expenseRepo.saveAndFlush(buildExpense(userA.getId(), 59000, "healthcare"));
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.expenses.length()").value(1))
+                .andExpect(jsonPath("$.expenses[0].amount").value(59000))
+                .andExpect(jsonPath("$.expenses[0].category").value("healthcare"))
+                .andExpect(jsonPath("$.expenses[0].incurredOn").value("2026-07-01"));
+    }
+
+    /**
+     * Tombstoned expenses are included in the export (PDPA ม.30 right to access covers all
+     * records in the pre-GC window).
+     */
+    @Test
+    void tombstonedExpensesIncludedInExport() throws Exception {
+        Expense live = buildExpense(userA.getId(), 42800, "baby-supplies");
+        expenseRepo.saveAndFlush(live);
+
+        Expense tombstoned = buildExpense(userA.getId(), 18400, "mother");
+        tombstoned.setDeletedAt(Instant.now());
+        expenseRepo.saveAndFlush(tombstoned);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.expenses.length()").value(2));
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private Expense buildExpense(UUID userId, int amount, String category) {
+        Expense e = new Expense();
+        e.setId(UUID.randomUUID());
+        e.setUserId(userId);
+        e.setAmount(amount);
+        e.setCategory(category);
+        e.setIncurredOn(java.time.LocalDate.of(2026, 7, 1));
+        return e;
+    }
 
     private SupplyItem buildSupplyItem(UUID userId, String name) {
         SupplyItem item = new SupplyItem();

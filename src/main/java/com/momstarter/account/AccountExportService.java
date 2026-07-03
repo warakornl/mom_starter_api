@@ -4,6 +4,7 @@ import com.momstarter.account.dto.export.AccountExportEntry;
 import com.momstarter.account.dto.export.AccountExportResponse;
 import com.momstarter.account.dto.export.ChecklistItemExportEntry;
 import com.momstarter.account.dto.export.ConsentHistoryExportEntry;
+import com.momstarter.account.dto.export.ExpenseExportEntry;
 import com.momstarter.account.dto.export.KickCountSessionExportEntry;
 import com.momstarter.account.dto.export.PregnancyProfileExportEntry;
 import com.momstarter.account.dto.export.ReminderExportEntry;
@@ -11,6 +12,7 @@ import com.momstarter.account.dto.export.ReminderOccurrenceExportEntry;
 import com.momstarter.account.dto.export.SupplyItemExportEntry;
 import com.momstarter.checklist.ChecklistItemRepository;
 import com.momstarter.consent.ConsentRecordRepository;
+import com.momstarter.expense.ExpenseRepository;
 import com.momstarter.error.ApiException;
 import com.momstarter.kickcount.KickCountSessionRepository;
 import com.momstarter.pregnancy.PregnancyProfile;
@@ -69,6 +71,7 @@ public class AccountExportService {
     private final UserRepository users;
     private final PregnancyProfileRepository profiles;
     private final SupplyItemRepository supplyItems;
+    private final ExpenseRepository expenseItems;
     private final ReminderRepository reminders;
     private final ReminderOccurrenceRepository reminderOccurrences;
     private final ChecklistItemRepository checklistItems;
@@ -79,6 +82,7 @@ public class AccountExportService {
             UserRepository users,
             PregnancyProfileRepository profiles,
             SupplyItemRepository supplyItems,
+            ExpenseRepository expenseItems,
             ReminderRepository reminders,
             ReminderOccurrenceRepository reminderOccurrences,
             ChecklistItemRepository checklistItems,
@@ -87,6 +91,7 @@ public class AccountExportService {
         this.users = users;
         this.profiles = profiles;
         this.supplyItems = supplyItems;
+        this.expenseItems = expenseItems;
         this.reminders = reminders;
         this.reminderOccurrences = reminderOccurrences;
         this.checklistItems = checklistItems;
@@ -144,6 +149,18 @@ public class AccountExportService {
                         s.getId(), s.getName(), s.getCategory(), s.getUnit(),
                         s.getOnHandQty(), s.getLowThreshold(),
                         s.getCreatedAt(), s.getUpdatedAt(), s.getDeletedAt()))
+                .toList();
+
+        // ---- expenses ----
+        // Non-health personal-financial data (PDPA ม.30: user's right to access their data).
+        // Note: if amount/note encryption is confirmed (EX-1/EX-2), cipher fields would be
+        // excluded (like kick_count_session.note_cipher). Currently stored plaintext.
+        List<ExpenseExportEntry> expenseEntries = expenseItems
+                .findAllByUserIdForExport(userId)
+                .stream()
+                .map(e -> new ExpenseExportEntry(
+                        e.getId(), e.getAmount(), e.getCategory(), e.getIncurredOn(),
+                        e.getNote(), e.getCreatedAt(), e.getUpdatedAt(), e.getDeletedAt()))
                 .toList();
 
         // ---- reminders ----
@@ -204,6 +221,7 @@ public class AccountExportService {
                 accountEntry,
                 profileEntry,
                 supplyItemEntries,
+                expenseEntries,
                 reminderEntries,
                 occurrenceEntries,
                 checklistEntries,
