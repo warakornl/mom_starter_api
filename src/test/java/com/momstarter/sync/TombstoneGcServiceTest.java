@@ -4,6 +4,10 @@ import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
 import com.momstarter.kickcount.KickCountSession;
 import com.momstarter.kickcount.KickCountSessionRepository;
+import com.momstarter.medication.MedicationLog;
+import com.momstarter.medication.MedicationLogRepository;
+import com.momstarter.medication.MedicationPlan;
+import com.momstarter.medication.MedicationPlanRepository;
 import com.momstarter.pregnancy.PregnancyProfile;
 import com.momstarter.pregnancy.PregnancyProfileRepository;
 import com.momstarter.selflog.SelfLog;
@@ -60,6 +64,8 @@ class TombstoneGcServiceTest {
     @Autowired private TombstoneGcService gcService;
     @Autowired private KickCountSessionRepository kickSessions;
     @Autowired private SelfLogRepository selfLogRepo;
+    @Autowired private MedicationPlanRepository medicationPlanRepo;
+    @Autowired private MedicationLogRepository medicationLogRepo;
     @Autowired private SupplyItemRepository supplyItems;
     @Autowired private PregnancyProfileRepository profiles;
     @Autowired private UserRepository users;
@@ -91,7 +97,9 @@ class TombstoneGcServiceTest {
                 "kick_count_session",
                 "pregnancy_profile",
                 "expenses",
-                "self_log"          // F2 fix: self_log tombstones must be hard-purged (PDPA ม.33)
+                "self_log",          // F2 fix: self_log tombstones must be hard-purged (PDPA ม.33)
+                "medication_log",    // Task 5: SD-2 health data — note_cipher shredded on tombstone
+                "medication_plan"    // Task 5: SD-2 health data — name/dose ciphers shredded on tombstone
         );
     }
 
@@ -342,6 +350,133 @@ class TombstoneGcServiceTest {
         assertThat(selfLogRepo.findById(s.getId())).isPresent();
     }
 
+    // -------------------------------------------------------------------------
+    // medication_plan: Task 5 — tombstones must be hard-purged (PDPA ม.33 / SD-2)
+    // -------------------------------------------------------------------------
+
+    /**
+     * medication_plan tombstone older than 180-day TTL must be hard-purged (Task 5 / PDPA ม.33).
+     *
+     * <p>name_cipher and dose_cipher are crypto-shredded to null on tombstone (§4.4(A)).
+     * The tombstone row itself must be purged after the 180-day TTL so the plan does not
+     * accumulate indefinitely in the DB.
+     */
+    @Test
+    void purge_medicationPlan_oldTombstone_purged() {
+        User user = savedUser("gc-mp-1@example.com");
+        MedicationPlan p = buildMedicationPlan(user.getId());
+        // Tombstoned 181 days ago — past 180-day TTL; cipher columns already shredded
+        p.setNameCipher(null);   // crypto-shredded (CHECK allows null when deleted_at IS NOT NULL)
+        p.setDeletedAt(Instant.now().minus(181, ChronoUnit.DAYS));
+        em.persistAndFlush(p);
+        em.clear();
+
+        int purged = gcService.purgeExpiredTombstones(180);
+
+        assertThat(purged).isGreaterThanOrEqualTo(1);
+        assertThat(medicationPlanRepo.findById(p.getId())).isEmpty();
+    }
+
+    /**
+     * medication_plan tombstone within the 180-day retention window must NOT be purged.
+     */
+    @Test
+    void purge_medicationPlan_recentTombstone_retained() {
+        User user = savedUser("gc-mp-2@example.com");
+        MedicationPlan p = buildMedicationPlan(user.getId());
+        // Tombstoned 10 days ago — within TTL; must be retained
+        p.setNameCipher(null);
+        p.setDeletedAt(Instant.now().minus(10, ChronoUnit.DAYS));
+        em.persistAndFlush(p);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(medicationPlanRepo.findById(p.getId())).isPresent();
+    }
+
+    /**
+     * Live (non-tombstoned) medication_plan rows must NEVER be touched by the GC sweep.
+     */
+    @Test
+    void purge_medicationPlan_liveRow_notTouched() {
+        User user = savedUser("gc-mp-3@example.com");
+        MedicationPlan p = buildMedicationPlan(user.getId());
+        // deletedAt = null — live; must not be touched
+        em.persistAndFlush(p);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(medicationPlanRepo.findById(p.getId())).isPresent();
+    }
+
+    // -------------------------------------------------------------------------
+    // medication_log: Task 5 — tombstones must be hard-purged (PDPA ม.33 / SD-2)
+    // -------------------------------------------------------------------------
+
+    /**
+     * medication_log tombstone older than 180-day TTL must be hard-purged (Task 5 / PDPA ม.33).
+     *
+     * <p>note_cipher is crypto-shredded to null on tombstone (§4.4(A)).
+     * The tombstone row itself must be purged after the 180-day TTL.
+     */
+    @Test
+    void purge_medicationLog_oldTombstone_purged() {
+        User user = savedUser("gc-ml-1@example.com");
+        MedicationPlan plan = buildMedicationPlan(user.getId());
+        em.persistAndFlush(plan);
+        MedicationLog l = buildMedicationLog(user.getId(), plan.getId());
+        // Tombstoned 181 days ago — past 180-day TTL
+        l.setNoteCipher(null);   // crypto-shredded on tombstone
+        l.setDeletedAt(Instant.now().minus(181, ChronoUnit.DAYS));
+        em.persistAndFlush(l);
+        em.clear();
+
+        int purged = gcService.purgeExpiredTombstones(180);
+
+        assertThat(purged).isGreaterThanOrEqualTo(1);
+        assertThat(medicationLogRepo.findById(l.getId())).isEmpty();
+    }
+
+    /**
+     * medication_log tombstone within the 180-day retention window must NOT be purged.
+     */
+    @Test
+    void purge_medicationLog_recentTombstone_retained() {
+        User user = savedUser("gc-ml-2@example.com");
+        MedicationPlan plan = buildMedicationPlan(user.getId());
+        em.persistAndFlush(plan);
+        MedicationLog l = buildMedicationLog(user.getId(), plan.getId());
+        // Tombstoned 10 days ago — within TTL; must be retained
+        l.setNoteCipher(null);
+        l.setDeletedAt(Instant.now().minus(10, ChronoUnit.DAYS));
+        em.persistAndFlush(l);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(medicationLogRepo.findById(l.getId())).isPresent();
+    }
+
+    /**
+     * Live (non-tombstoned) medication_log rows must NEVER be touched by the GC sweep.
+     */
+    @Test
+    void purge_medicationLog_liveRow_notTouched() {
+        User user = savedUser("gc-ml-3@example.com");
+        MedicationPlan plan = buildMedicationPlan(user.getId());
+        em.persistAndFlush(plan);
+        MedicationLog l = buildMedicationLog(user.getId(), plan.getId());
+        // deletedAt = null — live; must not be touched
+        em.persistAndFlush(l);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(medicationLogRepo.findById(l.getId())).isPresent();
+    }
+
     // =========================================================================
     // Helpers
     // =========================================================================
@@ -381,5 +516,25 @@ class TombstoneGcServiceTest {
         s.setLoggedAt(LocalDateTime.of(2026, 7, 1, 9, 0));
         s.setValueNumeric(new byte[]{1, 2, 3});  // non-null to pass empty_value guard
         return s;
+    }
+
+    private MedicationPlan buildMedicationPlan(UUID userId) {
+        MedicationPlan p = new MedicationPlan();
+        p.setId(UUID.randomUUID());
+        p.setUserId(userId);
+        p.setNameCipher(new byte[]{1, 2, 3});   // non-null: satisfies ck_medication_plan__live_name
+        p.setActive(true);
+        return p;
+    }
+
+    private MedicationLog buildMedicationLog(UUID userId, UUID planId) {
+        MedicationLog l = new MedicationLog();
+        l.setId(UUID.randomUUID());
+        l.setUserId(userId);
+        l.setMedicationPlanId(planId);
+        l.setStatus("taken");
+        l.setOccurrenceTime(LocalDateTime.of(2026, 7, 1, 9, 0));
+        l.setNoteCipher(new byte[]{4, 5, 6});   // will be null-shredded on tombstone
+        return l;
     }
 }

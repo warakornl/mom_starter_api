@@ -63,11 +63,21 @@ public class TombstoneGcService {
             "expenses",                // expenses slice — non-health personal-financial data.
                                        // Tombstone GC ensures deleted expenses are hard-purged after
                                        // the 180-day retention window (database-schema §4.4 / PDPA ม.33).
-            "self_log"                 // F2 fix (Task 5): self_log — SD-5 health metrics
+            "self_log",                // F2 fix (Task 5): self_log — SD-5 health metrics
                                        // (weight, BP, swelling, lochia, symptom). Tombstone GC
                                        // ensures deleted health records are hard-purged after the
                                        // 180-day retention window. Covers consent-withdrawal tombstones
                                        // (PDPA ม.33 / ruling 2.2 / database-schema §4.4).
+            "medication_log",          // Slice 2 Task 5: SD-2 health data — dose-event records.
+                                       // noteCipher is crypto-shredded on tombstone (§4.4(A)).
+                                       // GC ensures tombstoned logs are hard-purged after 180 days
+                                       // (PDPA ม.33). Listed before medication_plan in PURGE_TABLES
+                                       // for consistency with TIER1_CHILD_DELETE_ORDER FK order,
+                                       // though the GC DELETE is per-table and FK-independent.
+            "medication_plan"          // Slice 2 Task 5: SD-2 health data — medication schedules.
+                                       // nameCipher + doseCipher are crypto-shredded on tombstone
+                                       // (§4.4(A)). GC ensures tombstoned plans are hard-purged
+                                       // after 180 days (PDPA ม.33).
     );
 
     private final JdbcTemplate jdbc;
