@@ -20,6 +20,8 @@ import com.momstarter.reminder.Reminder;
 import com.momstarter.reminder.ReminderOccurrence;
 import com.momstarter.reminder.ReminderOccurrenceRepository;
 import com.momstarter.reminder.ReminderRepository;
+import com.momstarter.expense.Expense;
+import com.momstarter.expense.ExpenseRepository;
 import com.momstarter.supply.SupplyItem;
 import com.momstarter.supply.SupplyItemRepository;
 import org.junit.jupiter.api.Test;
@@ -101,6 +103,7 @@ class AccountErasureServiceTest {
     @Autowired private PasswordResetTokenRepository passwordResetTokens;
     @Autowired private EmailVerificationTokenRepository emailVerificationTokens;
     @Autowired private RefreshTokenRepository refreshTokens;
+    @Autowired private ExpenseRepository expenseItems;
     @Autowired private SupplyItemRepository supplyItems;
     @Autowired private ReminderRepository reminders;
     @Autowired private ReminderOccurrenceRepository reminderOccurrences;
@@ -132,6 +135,7 @@ class AccountErasureServiceTest {
         UUID emailTokenId   = persistEmailVerificationToken(userId);
         UUID refreshId      = persistRefreshToken(userId);
         UUID supplyId       = persistSupplyItem(userId);
+        UUID expenseId      = persistExpense(userId);
         UUID reminderId     = persistReminder(userId);
         UUID occurrenceId   = persistReminderOccurrence(userId, reminderId);
         UUID checklistId    = persistChecklistItem(userId);
@@ -147,13 +151,14 @@ class AccountErasureServiceTest {
 
         assertThat(processed).isEqualTo(1);
 
-        // All 10 Tier-1 child rows must be gone
+        // All 11 Tier-1 child rows must be gone
         assertThat(profiles.findById(profileId)).isEmpty();
         assertThat(authIdentities.findById(authId)).isEmpty();
         assertThat(passwordResetTokens.findById(pwdTokenId)).isEmpty();
         assertThat(emailVerificationTokens.findById(emailTokenId)).isEmpty();
         assertThat(refreshTokens.findById(refreshId)).isEmpty();
         assertThat(supplyItems.findById(supplyId)).isEmpty();
+        assertThat(expenseItems.findById(expenseId)).isEmpty();
         assertThat(reminders.findById(reminderId)).isEmpty();
         assertThat(reminderOccurrences.findById(occurrenceId)).isEmpty();
         assertThat(checklistItems.findById(checklistId)).isEmpty();
@@ -382,6 +387,16 @@ class AccountErasureServiceTest {
         s.setName("erasure-test-item");
         s.setCategory("other");
         return em.persistAndFlush(s).getId();
+    }
+
+    private UUID persistExpense(UUID userId) {
+        Expense e = new Expense();
+        e.setId(UUID.randomUUID());
+        e.setUserId(userId);
+        e.setAmount(59000);
+        e.setCategory("healthcare");
+        e.setIncurredOn(java.time.LocalDate.of(2026, 7, 1));
+        return em.persistAndFlush(e).getId();
     }
 
     private UUID persistReminder(UUID userId) {

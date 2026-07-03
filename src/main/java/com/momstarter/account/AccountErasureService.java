@@ -89,6 +89,7 @@ public class AccountErasureService {
             "refresh_token",             // FK → users (rotating refresh-token families)
             "pregnancy_profile",         // FK → users; health data (PDPA ม.26)
             "supply_items",              // FK → users (non-health sync collection)
+            "expenses",                  // FK → users (non-health personal-financial data)
             "reminders",                 // FK → users; health collection (PDPA ม.26)
             "reminder_occurrences",      // FK → users; reminder_id is a SOFT LINK (OQ-CAL-6)
             "checklist_items",           // FK → users; health collection (PDPA ม.26)
