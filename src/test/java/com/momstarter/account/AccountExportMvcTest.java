@@ -285,6 +285,15 @@ class AccountExportMvcTest {
         SelfLog selfLogB = buildSelfLog(userB.getId(), "blood_pressure");
         selfLogRepo.saveAndFlush(selfLogB);
 
+        // User B's medication_plan + medication_log — must NOT appear in user A's export
+        // (IDOR isolation for medication collections, Slice 2 Task 5).
+        // Plan is seeded first; log references it via the medication_plan_id FK.
+        MedicationPlan planB = buildMedicationPlan(userB.getId(), new byte[]{4, 5, 6}, null);
+        medicationPlanRepo.saveAndFlush(planB);
+        MedicationLog logB = buildMedicationLog(userB.getId(), planB.getId(),
+                "taken", LocalDateTime.of(2026, 7, 1, 9, 0), null);
+        medicationLogRepo.saveAndFlush(logB);
+
         // User A's own supply item
         SupplyItem itemA = buildSupplyItem(userA.getId(), "UserA-item");
         supplyItems.saveAndFlush(itemA);
@@ -297,16 +306,22 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.supplyItems.length()").value(1))
                 // userA has no self_logs seeded — userB's self_log must not leak across
                 .andExpect(jsonPath("$.selfLogs.length()").value(0))
+                // userA has no medication rows seeded — userB's must not leak across
+                .andExpect(jsonPath("$.medicationPlans.length()").value(0))
+                .andExpect(jsonPath("$.medicationLogs.length()").value(0))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
 
-        // A's export must not contain B's email, B's item name, or B's self_log id
+        // A's export must not contain B's email, B's item name, B's self_log id,
+        // or B's medication plan/log ids.
         org.assertj.core.api.Assertions.assertThat(body)
                 .contains("UserA-item")
                 .doesNotContain("export-b@example.com")
                 .doesNotContain("UserB-item")
-                .doesNotContain(selfLogB.getId().toString());
+                .doesNotContain(selfLogB.getId().toString())
+                .doesNotContain(planB.getId().toString())
+                .doesNotContain(logB.getId().toString());
     }
 
     // -------------------------------------------------------------------------
