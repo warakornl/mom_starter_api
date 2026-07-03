@@ -45,10 +45,16 @@ import java.util.UUID;
  * {@link #valueNumeric}, {@link #valueNumericSecondary}, {@link #valueText}, and {@link #noteCipher}
  * to {@code null} — identical to {@code kick_count_session.note_cipher} shred behaviour.
  *
- * <h3>PDPA retention (§4.4)</h3>
+ * <h3>PDPA retention + portability (§4.4 / ม.30/31/33)</h3>
  * <p>Tombstone GC after 180 days ({@code TOMBSTONE_TTL}). Per-account DEK crypto-shred on
- * {@code DELETE /account}. Registered in {@code TombstoneGcService.PURGE_TABLES} and
- * {@code AccountErasureService} Tier-1 purge.
+ * {@code DELETE /account}. Registered in:
+ * <ul>
+ *   <li>{@code TombstoneGcService.PURGE_TABLES} — tombstones hard-purged after 180 days (F2 fix)</li>
+ *   <li>{@code AccountErasureService} Tier-1 purge — child rows deleted before {@code users}
+ *       to satisfy the FK constraint (F1 fix; omission caused account erasure to FK-violate)</li>
+ *   <li>{@code AccountExportService} — all rows (live + tombstoned) included in
+ *       {@code GET /account/export} for PDPA ม.30/31 data portability (F3 fix)</li>
+ * </ul>
  */
 @Entity
 @Table(name = "self_log")

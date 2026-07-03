@@ -6,6 +6,8 @@ import com.momstarter.kickcount.KickCountSession;
 import com.momstarter.kickcount.KickCountSessionRepository;
 import com.momstarter.pregnancy.PregnancyProfile;
 import com.momstarter.pregnancy.PregnancyProfileRepository;
+import com.momstarter.selflog.SelfLog;
+import com.momstarter.selflog.SelfLogRepository;
 import com.momstarter.supply.SupplyItem;
 import com.momstarter.supply.SupplyItemRepository;
 import org.junit.jupiter.api.Test;
@@ -57,6 +59,7 @@ class TombstoneGcServiceTest {
     @Autowired private TestEntityManager em;
     @Autowired private TombstoneGcService gcService;
     @Autowired private KickCountSessionRepository kickSessions;
+    @Autowired private SelfLogRepository selfLogRepo;
     @Autowired private SupplyItemRepository supplyItems;
     @Autowired private PregnancyProfileRepository profiles;
     @Autowired private UserRepository users;
@@ -87,7 +90,8 @@ class TombstoneGcServiceTest {
                 "checklist_items",
                 "kick_count_session",
                 "pregnancy_profile",
-                "expenses"
+                "expenses",
+                "self_log"          // F2 fix: self_log tombstones must be hard-purged (PDPA ม.33)
         );
     }
 
@@ -276,6 +280,68 @@ class TombstoneGcServiceTest {
         assertThat(em.find(com.momstarter.expense.Expense.class, e.getId())).isNotNull();
     }
 
+    // -------------------------------------------------------------------------
+    // self_log: F2 fix — tombstones must be hard-purged (PDPA ม.33 / consent withdrawal)
+    // -------------------------------------------------------------------------
+
+    /**
+     * self_log tombstone older than 180-day TTL must be hard-purged (F2 / PDPA ม.33).
+     *
+     * <p>This was the F2 gap: self_log tombstones accumulated indefinitely because
+     * {@code self_log} was absent from {@link TombstoneGcService#PURGE_TABLES}.
+     * The fix adds it so tombstoned rows — including consent-withdrawal tombstones —
+     * are hard-purged after the 180-day retention window.
+     */
+    @Test
+    void purge_selfLog_oldTombstone_purged() {
+        User user = savedUser("gc-sl-1@example.com");
+        SelfLog s = buildSelfLog(user.getId(), "weight");
+        // Tombstoned 181 days ago — past the 180-day TTL; must be hard-purged
+        s.setValueNumeric(null);  // crypto-shredded on tombstone (PDPA §4.4(A))
+        s.setDeletedAt(Instant.now().minus(181, ChronoUnit.DAYS));
+        em.persistAndFlush(s);
+        em.clear();
+
+        int purged = gcService.purgeExpiredTombstones(180);
+
+        assertThat(purged).isGreaterThanOrEqualTo(1);
+        assertThat(selfLogRepo.findById(s.getId())).isEmpty();
+    }
+
+    /**
+     * self_log tombstone within the 180-day retention window must NOT be purged.
+     */
+    @Test
+    void purge_selfLog_recentTombstone_retained() {
+        User user = savedUser("gc-sl-2@example.com");
+        SelfLog s = buildSelfLog(user.getId(), "blood_pressure");
+        // Tombstoned 10 days ago — within TTL; must be retained
+        s.setValueNumeric(null);
+        s.setDeletedAt(Instant.now().minus(10, ChronoUnit.DAYS));
+        em.persistAndFlush(s);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(selfLogRepo.findById(s.getId())).isPresent();
+    }
+
+    /**
+     * Live (non-tombstoned) self_log rows must NEVER be touched by the GC sweep.
+     */
+    @Test
+    void purge_selfLog_liveRow_notTouched() {
+        User user = savedUser("gc-sl-3@example.com");
+        SelfLog s = buildSelfLog(user.getId(), "swelling");
+        // deletedAt = null — live row; must not be touched
+        em.persistAndFlush(s);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(selfLogRepo.findById(s.getId())).isPresent();
+    }
+
     // =========================================================================
     // Helpers
     // =========================================================================
@@ -304,6 +370,16 @@ class TombstoneGcServiceTest {
         s.setMovementCount(10);
         s.setTargetCount(10);
         s.setStatus("completed");
+        return s;
+    }
+
+    private SelfLog buildSelfLog(UUID userId, String metricType) {
+        SelfLog s = new SelfLog();
+        s.setId(UUID.randomUUID());
+        s.setUserId(userId);
+        s.setMetricType(metricType);
+        s.setLoggedAt(LocalDateTime.of(2026, 7, 1, 9, 0));
+        s.setValueNumeric(new byte[]{1, 2, 3});  // non-null to pass empty_value guard
         return s;
     }
 }

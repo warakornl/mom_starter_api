@@ -60,9 +60,14 @@ public class TombstoneGcService {
                                        // Soft-delete logic already exists (put() resurrect path);
                                        // entries older than retention window are NEVER resurrectable
                                        // (policy: >180 days = intent to erase permanently, ม.33).
-            "expenses"                 // expenses slice — non-health personal-financial data.
+            "expenses",                // expenses slice — non-health personal-financial data.
                                        // Tombstone GC ensures deleted expenses are hard-purged after
                                        // the 180-day retention window (database-schema §4.4 / PDPA ม.33).
+            "self_log"                 // F2 fix (Task 5): self_log — SD-5 health metrics
+                                       // (weight, BP, swelling, lochia, symptom). Tombstone GC
+                                       // ensures deleted health records are hard-purged after the
+                                       // 180-day retention window. Covers consent-withdrawal tombstones
+                                       // (PDPA ม.33 / ruling 2.2 / database-schema §4.4).
     );
 
     private final JdbcTemplate jdbc;
