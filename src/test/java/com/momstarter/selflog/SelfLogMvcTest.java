@@ -40,9 +40,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>Single log returned with all response fields</li>
  *   <li>{@code metricType} filter: valid value filters correctly; invalid value → 400</li>
  *   <li>{@code from}/{@code to} date-range filter on {@code loggedAt} (floating-civil bucket key)</li>
+ *   <li><strong>Inclusive civil-date bounds (§A.2)</strong>: {@code from} is normalised to
+ *       start-of-day and {@code to} to end-of-day so both ends cover the full civil day
+ *       regardless of the minute-precision time the client supplies.</li>
  *   <li><strong>End-of-day {@code to} boundary</strong>: a row at 23:59:30 is included when
- *       {@code to} = that civil day — enforcing inclusive civil-date bucket semantics (§A.2.3,
- *       backend-reviewer carry-forward). The controller normalises {@code to} to end-of-day.</li>
+ *       {@code to} = that civil day — enforcing inclusive civil-date bucket semantics (§A.2).
+ *       The controller normalises {@code to} to end-of-day.</li>
  *   <li>Tombstoned rows excluded ({@code deleted_at IS NULL})</li>
  *   <li><strong>IDOR</strong>: user A cannot see user B's logs — JWT subject is the only scope</li>
  *   <li>Unverified email → 403 {@code email_unverified} (ADR G-4: auth + email_verified only)</li>
@@ -50,6 +53,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   <li>Invalid cursor → 400 {@code invalid_cursor}</li>
  *   <li>Cursor pagination: {@code nextCursor} issued; continuation returns next page</li>
  *   <li>Empty result after filter → 200 with empty {@code items:[]}</li>
+ *   <li><strong>limit clamping</strong>: {@code limit > 500} is silently clamped to 500</li>
+ *   <li><strong>Sub-minute cursor precision</strong>: cursor encodes full {@code loggedAt}
+ *       precision so keyset continuation never skips rows within the same minute</li>
+ *   <li><strong>Identical {@code loggedAt} tie-break</strong>: {@code id DESC} tie-break through
+ *       the cursor returns all rows with the same {@code loggedAt}, no skip or duplicate</li>
  * </ul>
  *
  * <p>Security posture (ADR G-4): auth-only + {@code email_verified}. No {@code cloud_storage}
@@ -176,7 +184,7 @@ class SelfLogMvcTest {
     }
 
     // -------------------------------------------------------------------------
-    // 5. End-of-day 'to' boundary: row at 23:59:30 must be included (spec §A.2.3)
+    // 5. End-of-day 'to' boundary: row at 23:59:30 must be included (spec §A.2)
     //
     //    The controller normalises 'to' to end-of-day (toLocalDate().atTime(LocalTime.MAX))
     //    so a row logged at 23:59:30 is INCLUDED when to=YYYY-MM-DDT23:59 (minute precision).
@@ -351,6 +359,167 @@ class SelfLogMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items").isArray())
                 .andExpect(jsonPath("$.items").isEmpty());
+    }
+
+    // -------------------------------------------------------------------------
+    // 14. Symmetric civil 'from' bound: mid-day 'from' still includes earlier same-civil-day
+    //     row (spec §A.2 — inclusive civil bounds; Finding 1)
+    //
+    //     'from' is normalised to start-of-day so a row at 06:00 on the same civil day
+    //     is INCLUDED when from=2026-07-01T08:00. Without the fix 'from' is used verbatim
+    //     and the 06:00 row is excluded (06:00 < 08:00). This test is RED before the fix.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void get_fromMidDay_includesEarlierSameCivilDayRow() throws Exception {
+        // Spec §A.2 — inclusive civil bounds: normalising 'from' to start-of-day means
+        // a row at 06:00 on the same civil day is included even when from=08:00.
+        // BEFORE the fix this FAILS (from is used verbatim: 06:00 < 08:00 → excluded).
+        SelfLog earlyRow = buildAndSave(userId, "weight", LocalDateTime.of(2026, 7, 1, 6, 0));
+        buildAndSave(userId, "weight", LocalDateTime.of(2026, 8, 1, 9, 0)); // outside range
+
+        mvc.perform(get("/self-logs")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("from", "2026-07-01T08:00")   // mid-day — same civil day as 06:00
+                        .param("to",   "2026-07-31T23:59"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(earlyRow.getId().toString()));
+    }
+
+    // -------------------------------------------------------------------------
+    // 15. Sub-minute cursor precision: two rows with different sub-minute loggedAt
+    //     in the same minute across a page boundary (limit=1) are both returned,
+    //     none skipped (Finding 2)
+    //
+    //     Row A at 09:00:30, Row B at 09:00:15. Cursor for Row A must encode the full
+    //     precision "09:00:30" so page-2 query uses loggedAt < 09:00:30. Without the fix
+    //     the cursor encodes "09:00" (minute-truncated), page-2 query uses < 09:00:00,
+    //     and Row B (at 09:00:15 > 09:00:00) is definitively SKIPPED. This test is RED
+    //     before the fix.
+    // -------------------------------------------------------------------------
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void get_subMinuteCursorPrecision_noRowsSkipped() throws Exception {
+        // Row A at 09:00:30 — appears first in loggedAt DESC order
+        SelfLog rowA = new SelfLog();
+        rowA.setId(UUID.randomUUID());
+        rowA.setUserId(userId);
+        rowA.setMetricType("weight");
+        rowA.setLoggedAt(LocalDateTime.of(2026, 7, 1, 9, 0, 30)); // 09:00:30
+        logs.save(rowA);
+
+        // Row B at 09:00:15 — appears second in loggedAt DESC order
+        SelfLog rowB = new SelfLog();
+        rowB.setId(UUID.randomUUID());
+        rowB.setUserId(userId);
+        rowB.setMetricType("weight");
+        rowB.setLoggedAt(LocalDateTime.of(2026, 7, 1, 9, 0, 15)); // 09:00:15
+        logs.save(rowB);
+
+        // Page 1 — must return Row A (higher seconds → first in DESC order)
+        MvcResult r1 = mvc.perform(get("/self-logs")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(rowA.getId().toString()))
+                .andExpect(jsonPath("$.nextCursor").isString())
+                .andReturn();
+
+        Map<String, Object> body1 = objectMapper.readValue(
+                r1.getResponse().getContentAsString(), Map.class);
+        String nextCursor = (String) body1.get("nextCursor");
+        assertThat(nextCursor).isNotBlank();
+
+        // Page 2 using cursor — must return Row B (must NOT be skipped).
+        // Without the fix the cursor encodes "09:00" (minute-truncated) and Row B
+        // (at 09:00:15 which is > 09:00:00) falls outside the keyset window and is lost.
+        mvc.perform(get("/self-logs")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("cursor", nextCursor)
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(rowB.getId().toString()))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
+    }
+
+    // -------------------------------------------------------------------------
+    // 16. limit > 500 is silently clamped to 500 (spec §A.2 point 4 — max 500)
+    //
+    //     This verifies the clamping behaviour without requiring 500+ rows —
+    //     the endpoint must still return 200 and all available rows.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void get_limitAboveMax_clampedTo500() throws Exception {
+        // Seed 3 rows; pass limit=9999 — must clamp to 500 and return all 3 without error.
+        buildAndSave(userId, "weight", LocalDateTime.of(2026, 7, 1, 9, 0));
+        buildAndSave(userId, "weight", LocalDateTime.of(2026, 7, 2, 9, 0));
+        buildAndSave(userId, "weight", LocalDateTime.of(2026, 7, 3, 9, 0));
+
+        mvc.perform(get("/self-logs")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("limit", "9999"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(3))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
+    }
+
+    // -------------------------------------------------------------------------
+    // 17. Identical loggedAt — id DESC tie-break through cursor returns both rows,
+    //     no skip, no duplicate (spec §A.2 point 4: ORDER BY loggedAt DESC, id DESC)
+    // -------------------------------------------------------------------------
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void get_identicalLoggedAt_idTiebreakThroughCursorReturnsAll() throws Exception {
+        // Two rows with exactly the same loggedAt; ordering is by id DESC.
+        // Use known UUIDs so the expected order is deterministic.
+        LocalDateTime sameTime = LocalDateTime.of(2026, 7, 1, 9, 0);
+        UUID smallerId = UUID.fromString("00000000-0000-0000-0000-000000000001");
+        UUID largerId  = UUID.fromString("ffffffff-ffff-ffff-ffff-ffffffffffff");
+
+        SelfLog rowSmaller = new SelfLog();
+        rowSmaller.setId(smallerId);
+        rowSmaller.setUserId(userId);
+        rowSmaller.setMetricType("weight");
+        rowSmaller.setLoggedAt(sameTime);
+        logs.save(rowSmaller);
+
+        SelfLog rowLarger = new SelfLog();
+        rowLarger.setId(largerId);
+        rowLarger.setUserId(userId);
+        rowLarger.setMetricType("weight");
+        rowLarger.setLoggedAt(sameTime);
+        logs.save(rowLarger);
+
+        // Page 1 (limit=1): row with larger id comes first in id DESC order
+        MvcResult r1 = mvc.perform(get("/self-logs")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(largerId.toString()))
+                .andExpect(jsonPath("$.nextCursor").isString())
+                .andReturn();
+
+        Map<String, Object> body1 = objectMapper.readValue(
+                r1.getResponse().getContentAsString(), Map.class);
+        String nextCursor = (String) body1.get("nextCursor");
+        assertThat(nextCursor).isNotBlank();
+
+        // Page 2 using cursor: must return the row with smaller id — no skip, no duplicate
+        mvc.perform(get("/self-logs")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("cursor", nextCursor)
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(smallerId.toString()))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
     }
 
     // =========================================================================

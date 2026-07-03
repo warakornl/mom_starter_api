@@ -41,11 +41,11 @@ import java.util.stream.Collectors;
  *   <li>{@code deleted_at IS NULL} — tombstoned logs excluded.</li>
  *   <li>Optional {@code metricType} filter (invalid value → 400 {@code unknown_metric_type}).</li>
  *   <li>Optional {@code from}/{@code to} on {@code logged_at} (floating-civil, FLAG-1).</li>
- *   <li><strong>End-of-day normalisation for {@code to}:</strong> the controller normalises
- *       {@code to} to {@code toLocalDate().atTime(LocalTime.MAX)} so a row at e.g. 23:59:30
- *       is included when the caller passes {@code to=YYYY-MM-DDT23:59} (minute precision).
- *       This enforces the inclusive civil-date bucket semantics of spec §A.2.3. The {@code from}
- *       param is used as-is (inclusive lower bound).</li>
+ *   <li><strong>Inclusive civil-date bounds (spec §A.2):</strong> the controller normalises
+ *       both ends to the full civil day — {@code from} to {@code toLocalDate().atStartOfDay()}
+ *       and {@code to} to {@code toLocalDate().atTime(LocalTime.MAX)} — so a row at e.g.
+ *       06:00 is included when {@code from=YYYY-MM-DDT08:00} and a row at 23:59:30 is included
+ *       when {@code to=YYYY-MM-DDT23:59}. Both ends are symmetric civil-date-inclusive.</li>
  *   <li>Keyset pagination: {@code (loggedAt DESC, id DESC)}, default 100 / max 500 (N5).</li>
  *   <li>Consent gate: <strong>auth + {@code email_verified} only</strong> (ADR G-4).
  *       No {@code cloud_storage} gate — a read of own already-synced rows is not a new egress.</li>
@@ -72,9 +72,20 @@ class SelfLogController {
     /** Cursor TTL in milliseconds (1 hour). */
     private static final long CURSOR_TTL_MS = 3_600_000L;
 
-    /** Floating-civil formatter for loggedAt (FLAG-1). */
+    /** Floating-civil formatter for loggedAt displayed in the response body (FLAG-1). */
     private static final DateTimeFormatter CIVIL_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm");
+
+    /**
+     * Full-precision ISO formatter for the cursor's {@code loggedAt} field.
+     *
+     * <p>Using CIVIL_FMT (minute-precision) in the cursor would truncate seconds/nanos and
+     * corrupt the keyset window: rows in {@code (truncatedMinute, actualLoggedAt]} would be
+     * skipped on continuation. This formatter preserves seconds and nanoseconds so the
+     * {@code (loggedAt DESC, id DESC)} keyset is always exact (spec §A.2 point 4).
+     * Note: CIVIL_FMT remains for the wire {@code loggedAt} response field — unchanged.
+     */
+    private static final DateTimeFormatter CURSOR_FMT = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
     /**
      * Closed enum of valid metricType values.
@@ -104,9 +115,10 @@ class SelfLogController {
      * <ul>
      *   <li>{@code metricType} — optional; one of {@code weight|blood_pressure|swelling|lochia|symptom};
      *       invalid value → 400</li>
-     *   <li>{@code from} — optional lower bound on {@code loggedAt} ("YYYY-MM-DDTHH:mm", inclusive)</li>
+     *   <li>{@code from} — optional lower bound on {@code loggedAt} ("YYYY-MM-DDTHH:mm");
+     *       normalised to start-of-day (inclusive civil-date bound, §A.2)</li>
      *   <li>{@code to}   — optional upper bound on {@code loggedAt} ("YYYY-MM-DDTHH:mm");
-     *       normalised to end-of-day (inclusive civil-date bucket, §A.2.3)</li>
+     *       normalised to end-of-day (inclusive civil-date bound, §A.2)</li>
      *   <li>{@code cursor} — opaque continuation token (1h TTL; absent = first page)</li>
      *   <li>{@code limit}  — page size [1, 500]; default 100</li>
      * </ul>
@@ -146,17 +158,24 @@ class SelfLogController {
         // 3. Resolve page size
         int pageSize = (limit != null) ? Math.min(Math.max(limit, 1), MAX_LIMIT) : DEFAULT_LIMIT;
 
-        // 4. Parse range filters
-        //    from: lower bound — used as-is (inclusive)
-        //    to:   upper bound — normalised to end-of-day so a row at e.g. 23:59:30 is included
-        //          when the caller sends to=YYYY-MM-DDT23:59 (spec §A.2.3, backend-reviewer
-        //          carry-forward: inclusive civil-date bucket semantics).
+        // 4. Parse range filters — spec §A.2: inclusive civil bounds.
+        //    Both 'from' and 'to' are normalised to the full civil day so that the client's
+        //    minute-precision value never accidentally excludes rows at the day edges:
+        //    - 'from' → start-of-day (atStartOfDay): a row at 06:00 is included even when
+        //      the client sends from=2026-07-01T08:00 (same civil day).
+        //    - 'to'   → end-of-day (atTime(LocalTime.MAX)): a row at 23:59:30 is included
+        //      even when the client sends to=2026-07-01T23:59 (minute precision).
+        //    Both normalizations are symmetric and implement the "inclusive civil bounds" rule.
         LocalDateTime fromDt = parseCivil(from);
-        LocalDateTime toDt   = parseCivil(to);
+        if (fromDt != null) {
+            // Normalise to start-of-day: spec §A.2 — inclusive civil lower bound.
+            fromDt = fromDt.toLocalDate().atStartOfDay();
+        }
+        LocalDateTime toDt = parseCivil(to);
         if (toDt != null) {
             // Normalise to end-of-day: strip seconds/nanos from the parsed minute-precision
             // civil time and replace with LocalTime.MAX (23:59:59.999999999).
-            // This ensures the inclusive upper bound covers the entire civil day.
+            // This ensures the inclusive civil upper bound covers the entire civil day.
             toDt = toDt.toLocalDate().atTime(LocalTime.MAX);
         }
 
@@ -261,14 +280,26 @@ class SelfLogController {
     @JsonIgnoreProperties(ignoreUnknown = true)
     @JsonInclude(JsonInclude.Include.NON_NULL)
     static class HistoryCursor {
-        public String lat;    // loggedAt as "YYYY-MM-DDTHH:mm"
+        /**
+         * Full-precision ISO-8601 loggedAt string (e.g. {@code "2026-07-01T09:00:30"} or
+         * {@code "2026-07-01T09:00:30.123456789"}).
+         *
+         * <p>Stored with full seconds/nanos precision (via {@link SelfLogController#CURSOR_FMT})
+         * so the keyset window {@code loggedAt < cursorLoggedAt} is never truncated to the
+         * minute boundary. Using CIVIL_FMT here would drop sub-minute precision and skip rows
+         * in {@code (truncatedMinute, actualLoggedAt]} on continuation (spec §A.2 point 4).
+         */
+        public String lat;
         public String lid;    // id as UUID string
         public long issued;   // epoch ms for TTL
 
-        /** Encodes a cursor from the last row's keyset fields. */
+        /** Encodes a cursor from the last row's keyset fields using full loggedAt precision. */
         static String encode(LocalDateTime loggedAt, UUID id, ObjectMapper mapper) {
             HistoryCursor c = new HistoryCursor();
-            c.lat = loggedAt != null ? loggedAt.format(CIVIL_FMT) : null;
+            // Use CURSOR_FMT (ISO_LOCAL_DATE_TIME) — NOT CIVIL_FMT — to preserve seconds/nanos
+            // so the keyset window on the next page is exact. CIVIL_FMT is only for the
+            // wire response loggedAt field (toResponse()), not for the cursor position.
+            c.lat = loggedAt != null ? loggedAt.format(CURSOR_FMT) : null;
             c.lid = id != null ? id.toString() : null;
             c.issued = System.currentTimeMillis();
             try {
@@ -302,9 +333,16 @@ class SelfLogController {
             }
         }
 
-        /** Parses the stored {@code loggedAt} string back to a {@link LocalDateTime}. */
+        /**
+         * Parses the stored full-precision ISO loggedAt back to a {@link LocalDateTime}.
+         *
+         * <p>Uses the default ISO parser (handles {@code "HH:mm:ss"} and optional
+         * {@code ".nnnnnnnnn"} nanoseconds) matching the {@link SelfLogController#CURSOR_FMT}
+         * used on encode. A minute-precision string from an older cursor would fail here and
+         * surface as {@code 400 invalid_cursor} (acceptable: cursors carry a 1h TTL).
+         */
         LocalDateTime cursorLoggedAt() {
-            try { return LocalDateTime.parse(lat, CIVIL_FMT); }
+            try { return LocalDateTime.parse(lat, CURSOR_FMT); }
             catch (Exception e) { throw new ApiException(400, "invalid_cursor"); }
         }
 
