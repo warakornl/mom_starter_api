@@ -153,4 +153,24 @@ public interface KickCountSessionRepository extends JpaRepository<KickCountSessi
                                                    @Param("cursorStartedAt") LocalDateTime cursorStartedAt,
                                                    @Param("cursorId") UUID cursorId,
                                                    Pageable pageable);
+
+    // -------------------------------------------------------------------------
+    // PDPA ม.30/31 — data export (all records, including tombstones)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns ALL kick-count sessions for the given user, including soft-deleted tombstones.
+     * Used exclusively by the {@code GET /account/export} path (PDPA ม.30/31 portability).
+     *
+     * <p>{@code note_cipher} is a field on the entity but is NEVER mapped into the export DTO
+     * — see {@link com.momstarter.account.dto.export.KickCountSessionExportEntry} Javadoc.
+     *
+     * <p>Size note: bounded by daily sessions during pregnancy (≈270 max at 9 months daily use).
+     *
+     * @param userId the authenticated user's id (IDOR scope enforced by the service)
+     * @return all sessions in {@code (started_at ASC, id ASC)} order
+     */
+    @Query("SELECT s FROM KickCountSession s WHERE s.userId = :userId " +
+           "ORDER BY s.startedAt ASC, s.id ASC")
+    List<KickCountSession> findAllByUserIdForExport(@Param("userId") UUID userId);
 }

@@ -108,4 +108,23 @@ public interface ReminderOccurrenceRepository extends JpaRepository<ReminderOccu
            "ORDER BY o.scheduledLocalTime ASC")
     List<ReminderOccurrence> findLiveByUserIdAndReminderId(@Param("userId") UUID userId,
                                                             @Param("reminderId") UUID reminderId);
+
+    // -------------------------------------------------------------------------
+    // PDPA ม.30/31 — data export (all records, including tombstones)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns ALL reminder occurrences for the given user, including soft-deleted tombstones.
+     * Used exclusively by the {@code GET /account/export} path (PDPA ม.30/31 portability).
+     *
+     * <p>Size note: in MVP, only {@code done}/{@code snoozed} occurrences are pushed to the
+     * server (W-A sparse table). The result set is bounded by the user's actual adherence
+     * history and is naturally small for a single-user export.
+     *
+     * @param userId the authenticated user's id (IDOR scope enforced by the service)
+     * @return all occurrences in {@code (scheduled_local_time ASC, id ASC)} order
+     */
+    @Query("SELECT o FROM ReminderOccurrence o WHERE o.userId = :userId " +
+           "ORDER BY o.scheduledLocalTime ASC, o.id ASC")
+    List<ReminderOccurrence> findAllByUserIdForExport(@Param("userId") UUID userId);
 }

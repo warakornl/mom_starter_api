@@ -115,4 +115,19 @@ public interface ChecklistItemRepository extends JpaRepository<ChecklistItem, UU
            "ORDER BY c.scheduledAt ASC")
     List<ChecklistItem> findUpcomingAppointments(@Param("userId") UUID userId,
                                                   @Param("since") java.time.LocalDateTime since);
+
+    // -------------------------------------------------------------------------
+    // PDPA ม.30/31 — data export (all records, including tombstones)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns ALL checklist items for the given user, including soft-deleted tombstones.
+     * Used exclusively by the {@code GET /account/export} path (PDPA ม.30/31 portability).
+     *
+     * @param userId the authenticated user's id (IDOR scope enforced by the service)
+     * @return all live and tombstoned items in {@code (updated_at ASC, id ASC)} order
+     */
+    @Query("SELECT c FROM ChecklistItem c WHERE c.userId = :userId " +
+           "ORDER BY c.updatedAt ASC, c.id ASC")
+    List<ChecklistItem> findAllByUserIdForExport(@Param("userId") UUID userId);
 }

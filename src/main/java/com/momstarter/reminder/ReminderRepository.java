@@ -95,4 +95,19 @@ public interface ReminderRepository extends JpaRepository<Reminder, UUID> {
            "ORDER BY r.updatedAt ASC, r.id ASC")
     List<Reminder> findByUserIdAndDeletedAtIsNull(@Param("userId") UUID userId,
                                                    Pageable pageable);
+
+    // -------------------------------------------------------------------------
+    // PDPA ม.30/31 — data export (all records, including tombstones)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns ALL reminders for the given user, including soft-deleted tombstones.
+     * Used exclusively by the {@code GET /account/export} path (PDPA ม.30/31 portability).
+     *
+     * @param userId the authenticated user's id (IDOR scope enforced by the service)
+     * @return all live and tombstoned reminders in {@code (updated_at ASC, id ASC)} order
+     */
+    @Query("SELECT r FROM Reminder r WHERE r.userId = :userId " +
+           "ORDER BY r.updatedAt ASC, r.id ASC")
+    List<Reminder> findAllByUserIdForExport(@Param("userId") UUID userId);
 }

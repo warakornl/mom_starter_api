@@ -157,4 +157,20 @@ public interface SupplyItemRepository extends JpaRepository<SupplyItem, UUID> {
            "ORDER BY s.updatedAt ASC, s.id ASC")
     List<SupplyItem> findByUserIdAndDeletedAtIsNull(@Param("userId") UUID userId,
                                                      Pageable pageable);
+
+    // -------------------------------------------------------------------------
+    // PDPA ม.30/31 — data export (all records, including tombstones)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns ALL supply items for the given user, including soft-deleted tombstones.
+     * Used exclusively by the {@code GET /account/export} path (PDPA ม.30/31 portability).
+     * Ordered by {@code (updated_at ASC, id ASC)} for deterministic output.
+     *
+     * @param userId the authenticated user's id (IDOR scope enforced by the service)
+     * @return all live and tombstoned items in keyset order
+     */
+    @Query("SELECT s FROM SupplyItem s WHERE s.userId = :userId " +
+           "ORDER BY s.updatedAt ASC, s.id ASC")
+    List<SupplyItem> findAllByUserIdForExport(@Param("userId") UUID userId);
 }

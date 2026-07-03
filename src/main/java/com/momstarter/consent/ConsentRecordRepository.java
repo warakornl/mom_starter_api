@@ -109,4 +109,23 @@ public interface ConsentRecordRepository extends JpaRepository<ConsentRecord, UU
                                                   @Param("cursorGrantedAt") Instant cursorGrantedAt,
                                                   @Param("cursorId") UUID cursorId,
                                                   Pageable pageable);
+
+    // -------------------------------------------------------------------------
+    // PDPA ม.30/31 — data export (full audit history, chronological)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns the full consent audit history for the given user, ordered chronologically
+     * ({@code granted_at ASC, id ASC}). Used exclusively by the {@code GET /account/export}
+     * path (PDPA ม.30/31 portability).
+     *
+     * <p>All rows are returned (no pagination) since the total number of consent events
+     * per user is naturally bounded (6 consent types × small number of changes each).
+     *
+     * @param userId the authenticated user's id (IDOR scope enforced by the service)
+     * @return all consent records in chronological order
+     */
+    @Query("SELECT c FROM ConsentRecord c WHERE c.userId = :userId " +
+           "ORDER BY c.grantedAt ASC, c.id ASC")
+    List<ConsentRecord> findAllByUserIdForExport(@Param("userId") UUID userId);
 }
