@@ -158,9 +158,11 @@ class MedicationPlanController {
      *
      * <p>Ciphertext columns (name/dose) are Base64-encoded for JSON transport.
      * The server NEVER decrypts these bytes (INV-M3 / ADR Decision 1).
-     * {@link #scheduleRule} is re-parsed from the stored JSON string to a {@link JsonNode}
-     * so it is embedded as a JSON object on the wire (not double-encoded as a string).
-     * Internal-only fields (userId, clientId, sourceSuggestionStateId) are NOT included.
+     * {@link MedicationPlanResponse#scheduleRule} is re-parsed from the stored JSON string to a
+     * {@link JsonNode} so it is embedded as a JSON object on the wire (not double-encoded as a string).
+     * {@link MedicationPlanResponse#sourceSuggestionStateId} is the user's own opaque soft-ref UUID
+     * (spec §A.2 / RULING 2) — included when non-null, omitted by {@code @JsonInclude(NON_NULL)} otherwise.
+     * Internal-only fields ({@code userId}, {@code clientId}) are NOT included.
      */
     private MedicationPlanResponse toResponse(MedicationPlan p) {
         return new MedicationPlanResponse(
@@ -169,6 +171,7 @@ class MedicationPlanController {
                 base64OrNull(p.getDoseCipher()),
                 parseScheduleRule(p.getScheduleRule()),
                 p.isActive(),
+                p.getSourceSuggestionStateId(),
                 p.getVersion(),
                 p.getCreatedAt(),
                 p.getUpdatedAt(),

@@ -128,6 +128,8 @@ class MedicationPlanMvcTest {
         // scheduleRule stored as JSON string; returned as JSON object (JsonNode, not string literal)
         String scheduleJson = "{\"freq\":\"daily\",\"startAt\":\"2026-07-01T08:00\","
                 + "\"timesOfDay\":[\"08:00\"]}";
+        // sourceSuggestionStateId: non-null opaque soft-ref (RULING 2) — must round-trip in response
+        UUID srcSuggId = UUID.randomUUID();
 
         MedicationPlan p = new MedicationPlan();
         p.setId(UUID.randomUUID());
@@ -136,6 +138,7 @@ class MedicationPlanMvcTest {
         p.setDoseCipher(doseBytes);
         p.setScheduleRule(scheduleJson);
         p.setActive(true);
+        p.setSourceSuggestionStateId(srcSuggId);
         planRepo.save(p);
 
         mvc.perform(get("/medication-plans")
@@ -150,9 +153,31 @@ class MedicationPlanMvcTest {
                 .andExpect(jsonPath("$.items[0].version").isNumber())
                 .andExpect(jsonPath("$.items[0].createdAt").isNotEmpty())
                 .andExpect(jsonPath("$.items[0].updatedAt").isNotEmpty())
-                // internal-only fields must NOT be present (no userId / clientId / sourceSuggestionStateId)
+                // sourceSuggestionStateId: non-null → must appear in response (spec §A.2 / RULING 2)
+                .andExpect(jsonPath("$.items[0].sourceSuggestionStateId")
+                        .value(srcSuggId.toString()))
+                // userId and clientId are internal-only — must NOT be present
                 .andExpect(jsonPath("$.items[0].userId").doesNotExist())
-                .andExpect(jsonPath("$.items[0].clientId").doesNotExist())
+                .andExpect(jsonPath("$.items[0].clientId").doesNotExist());
+    }
+
+    // -------------------------------------------------------------------------
+    // 2b. PRN plan (null scheduleRule + null sourceSuggestionStateId) — both omitted
+    //     (@JsonInclude NON_NULL path — spec §A.2 / RULING 2)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void get_prn_plan_nullScheduleRule_and_nullSourceSuggestionStateId_omitted() throws Exception {
+        // buildAndSave leaves both scheduleRule and sourceSuggestionStateId null
+        buildAndSave(userId);
+
+        mvc.perform(get("/medication-plans")
+                        .header("Authorization", "Bearer " + bearer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                // PRN/ad-hoc plan: scheduleRule null → omitted by @JsonInclude(NON_NULL)
+                .andExpect(jsonPath("$.items[0].scheduleRule").doesNotExist())
+                // sourceSuggestionStateId null → omitted by @JsonInclude(NON_NULL)
                 .andExpect(jsonPath("$.items[0].sourceSuggestionStateId").doesNotExist());
     }
 
@@ -187,13 +212,16 @@ class MedicationPlanMvcTest {
         userB.setEmailVerified(true);
         userB = users.save(userB);
 
-        // Plan belonging to user B — must not appear in user A's response
-        buildAndSave(userB.getId());
+        // Seed caller A's OWN plan AND user B's plan — mixed-tenant fixture (true filter proof)
+        MedicationPlan aPlan = buildAndSave(userId);
+        buildAndSave(userB.getId()); // must NOT appear in A's response
 
+        // Response must contain exactly A's plan and nothing from B
         mvc.perform(get("/medication-plans")
                         .header("Authorization", "Bearer " + bearer))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items").isEmpty());
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(aPlan.getId().toString()));
     }
 
     // -------------------------------------------------------------------------
@@ -361,6 +389,74 @@ class MedicationPlanMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].id").value(smallerId.toString()))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
+    }
+
+    // -------------------------------------------------------------------------
+    // 11. Sub-second updatedAt cursor precision: two plans at different sub-second
+    //     updatedAt values within the same second — cursor must encode full Instant
+    //     precision so page-2 does not skip the earlier-in-second plan.
+    //
+    //     Plan A: updatedAt = T.500ms  (appears first in DESC order)
+    //     Plan B: updatedAt = T.100ms  (appears second)
+    //
+    //     Without full-precision cursor the cursor would encode "T.000Z" (truncated to
+    //     seconds) and the page-2 predicate (updatedAt < T.000Z) would exclude Plan B
+    //     (which is at T.100ms > T.000Z). With full precision cursor encodes T.500Z and
+    //     page-2 predicate (updatedAt < T.500Z) correctly includes Plan B at T.100ms.
+    // -------------------------------------------------------------------------
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void get_subSecondUpdatedAt_cursorPrecision_noRowsSkipped() throws Exception {
+        UUID idA = UUID.fromString("a0000000-0000-0000-0000-000000000001");
+        UUID idB = UUID.fromString("b0000000-0000-0000-0000-000000000002");
+
+        MedicationPlan planA = buildPlanWith(userId, idA);
+        MedicationPlan planB = buildPlanWith(userId, idB);
+
+        // Force sub-second-distinct updatedAt values via native SQL (bypasses @PreUpdate)
+        // Plan A at 500ms — higher updatedAt → first in DESC order
+        Instant tA = Instant.parse("2026-07-01T09:00:00.500Z");
+        // Plan B at 100ms — lower updatedAt → second in DESC order
+        Instant tB = Instant.parse("2026-07-01T09:00:00.100Z");
+
+        em.createNativeQuery("UPDATE medication_plan SET updated_at = ? WHERE id = ?")
+                .setParameter(1, Timestamp.from(tA))
+                .setParameter(2, idA)
+                .executeUpdate();
+        em.createNativeQuery("UPDATE medication_plan SET updated_at = ? WHERE id = ?")
+                .setParameter(1, Timestamp.from(tB))
+                .setParameter(2, idB)
+                .executeUpdate();
+        em.flush();
+        em.clear(); // evict L1 cache
+
+        // Page 1 (limit=1): Plan A (500ms) must come first
+        MvcResult r1 = mvc.perform(get("/medication-plans")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(idA.toString()))
+                .andExpect(jsonPath("$.nextCursor").isString())
+                .andReturn();
+
+        Map<String, Object> body1 = objectMapper.readValue(
+                r1.getResponse().getContentAsString(), Map.class);
+        String nextCursor = (String) body1.get("nextCursor");
+        assertThat(nextCursor).isNotBlank();
+
+        // Page 2 using cursor: Plan B (100ms) must appear — must NOT be skipped.
+        // Without sub-second precision the cursor would encode T.000Z and the
+        // predicate updatedAt < T.000Z would exclude Plan B (at T.100ms > T.000Z).
+        mvc.perform(get("/medication-plans")
+                        .header("Authorization", "Bearer " + bearer)
+                        .param("cursor", nextCursor)
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(idB.toString()))
                 .andExpect(jsonPath("$.nextCursor").doesNotExist());
     }
 

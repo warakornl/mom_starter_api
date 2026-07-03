@@ -251,13 +251,16 @@ class MedicationLogMvcTest {
         userB.setEmailVerified(true);
         userB = users.save(userB);
 
-        // Log belonging to user B — must not appear in user A's response
-        buildAndSave(userB.getId(), LocalDateTime.of(2026, 7, 1, 9, 0));
+        // Seed caller A's OWN log AND user B's log — mixed-tenant fixture (true filter proof)
+        MedicationLog aLog = buildAndSave(userId, LocalDateTime.of(2026, 7, 1, 9, 0));
+        buildAndSave(userB.getId(), LocalDateTime.of(2026, 7, 2, 9, 0)); // must NOT appear
 
+        // Response must contain exactly A's log and nothing from B
         mvc.perform(get("/medication-logs")
                         .header("Authorization", "Bearer " + bearer))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items").isEmpty());
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].id").value(aLog.getId().toString()));
     }
 
     // -------------------------------------------------------------------------

@@ -19,15 +19,22 @@ import java.util.UUID;
  * re-parsed from the stored JSON string to a {@link JsonNode} so Jackson serialises it as a
  * nested JSON object on the wire (not as a string literal). {@code null} for PRN/ad-hoc plans.
  *
+ * <h3>sourceSuggestionStateId — opaque soft-ref (spec §A.2 / RULING 2)</h3>
+ * <p>{@link #sourceSuggestionStateId} is the user's own opaque UUID soft-link to the suggestion
+ * that spawned this plan. It is userId-scoped (not cross-tenant), carries no sensitive data,
+ * and is explicitly listed in the wire schema (spec §A.2 / data-model §3.2 / RULING 2).
+ * Omitted when {@code null} (user-created plan with no suggestion provenance).
+ *
  * <h3>Fields omitted (internal-only — not for the read surface)</h3>
- * <p>{@code userId}, {@code clientId}, and {@code sourceSuggestionStateId} are internal LWW
- * fields not exposed by the read endpoint (D7 / IDOR prevention / no client need).
+ * <p>{@code userId} and {@code clientId} are internal LWW fields not exposed by the read
+ * endpoint (D7 / IDOR prevention). {@code sourceSuggestionStateId} IS exposed — it is the
+ * user's own opaque soft-ref, not an internal server ID.
  *
  * <h3>Null-omission</h3>
  * <p>Optional fields omitted from the JSON when null ({@link #dose}, {@link #scheduleRule},
- * {@link #deletedAt}). Live rows always have {@link #name} non-null (guarded by
- * {@code ck_medication_plan__live_name} DB CHECK). {@link #deletedAt} is always null for the
- * live-only read surface (soft-deleted rows are excluded by the repository query).
+ * {@link #sourceSuggestionStateId}, {@link #deletedAt}). Live rows always have {@link #name}
+ * non-null (guarded by {@code ck_medication_plan__live_name} DB CHECK).
+ * {@link #deletedAt} is always null for the live-only read surface.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class MedicationPlanResponse {
@@ -54,6 +61,7 @@ public class MedicationPlanResponse {
      * {@code null} for PRN/ad-hoc plans (no recurring schedule, M=0 for adherence).
      * Server validates grammar on push; never expands for adherence (INV-M3).
      * Re-parsed from the stored JSON string to avoid string double-encoding on the wire.
+     * Omitted when null (NON_NULL).
      */
     public final JsonNode scheduleRule;
 
@@ -62,6 +70,15 @@ public class MedicationPlanResponse {
      * A single LWW boolean — not time-versioned.
      */
     public final boolean active;
+
+    /**
+     * Opaque soft-ref UUID linking this plan to the suggestion that spawned it (RULING 2).
+     * The {@code user_suggestion_state} table does NOT exist server-side in MVP; this is
+     * stored as an opaque {@code uuid} with no FK constraint. Omitted when {@code null}
+     * (user-created plan with no suggestion provenance). NOT an internal server ID —
+     * the user's own userId-scoped soft-ref (spec §A.2 / data-model §3.2).
+     */
+    public final UUID sourceSuggestionStateId;
 
     // <sync> block (api-contract §1)
 
@@ -86,6 +103,7 @@ public class MedicationPlanResponse {
                            String dose,
                            JsonNode scheduleRule,
                            boolean active,
+                           UUID sourceSuggestionStateId,
                            Long version,
                            Instant createdAt,
                            Instant updatedAt,
@@ -95,6 +113,7 @@ public class MedicationPlanResponse {
         this.dose = dose;
         this.scheduleRule = scheduleRule;
         this.active = active;
+        this.sourceSuggestionStateId = sourceSuggestionStateId;
         this.version = version;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
