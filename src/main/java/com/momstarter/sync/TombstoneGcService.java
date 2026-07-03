@@ -55,11 +55,14 @@ public class TombstoneGcService {
             "reminder_occurrences",
             "checklist_items",
             "kick_count_session",      // K-6 retention — enumerated here per DB-reviewer #3
-            "pregnancy_profile"        // Phase 3 (hard-erasure prod-gate) — blocker B:
+            "pregnancy_profile",       // Phase 3 (hard-erasure prod-gate) — blocker B:
                                        // EDD/birth_date are the most sensitive fields (PDPA ม.26).
                                        // Soft-delete logic already exists (put() resurrect path);
                                        // entries older than retention window are NEVER resurrectable
                                        // (policy: >180 days = intent to erase permanently, ม.33).
+            "expenses"                 // expenses slice — non-health personal-financial data.
+                                       // Tombstone GC ensures deleted expenses are hard-purged after
+                                       // the 180-day retention window (database-schema §4.4 / PDPA ม.33).
     );
 
     private final JdbcTemplate jdbc;

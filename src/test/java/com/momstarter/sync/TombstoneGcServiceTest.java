@@ -78,6 +78,7 @@ class TombstoneGcServiceTest {
         // All tables with tombstone columns must be in the list.
         // pregnancy_profile was added in Phase 3 (hard-erasure prod-gate) — EDD/birth_date
         // are the most sensitive fields (PDPA ม.26) and must be subject to GC.
+        // expenses was added in the expenses slice (non-health, offline-sync collection).
         List<String> tables = gcService.purgeTableNames();
         assertThat(tables).containsExactlyInAnyOrder(
                 "supply_items",
@@ -85,7 +86,8 @@ class TombstoneGcServiceTest {
                 "reminder_occurrences",
                 "checklist_items",
                 "kick_count_session",
-                "pregnancy_profile"
+                "pregnancy_profile",
+                "expenses"
         );
     }
 
@@ -212,6 +214,66 @@ class TombstoneGcServiceTest {
 
         assertThat(purged).isGreaterThanOrEqualTo(1);
         assertThat(supplyItems.findById(item.getId())).isEmpty();
+    }
+
+    // -------------------------------------------------------------------------
+    // expenses: old tombstone purged
+    // -------------------------------------------------------------------------
+
+    @Test
+    void purge_expenses_oldTombstone_purged() {
+        User user = savedUser("gc-expense-1@example.com");
+        com.momstarter.expense.Expense e = new com.momstarter.expense.Expense();
+        e.setId(UUID.randomUUID());
+        e.setUserId(user.getId());
+        e.setAmount(59000);
+        e.setCategory("healthcare");
+        e.setIncurredOn(LocalDate.of(2026, 7, 1));
+        e.setDeletedAt(Instant.now().minus(200, ChronoUnit.DAYS));
+        em.persistAndFlush(e);
+        em.clear();
+
+        int purged = gcService.purgeExpiredTombstones(180);
+
+        assertThat(purged).isGreaterThanOrEqualTo(1);
+        // The expense tombstone must be hard-purged
+        assertThat(em.find(com.momstarter.expense.Expense.class, e.getId())).isNull();
+    }
+
+    @Test
+    void purge_expenses_recentTombstone_retained() {
+        User user = savedUser("gc-expense-2@example.com");
+        com.momstarter.expense.Expense e = new com.momstarter.expense.Expense();
+        e.setId(UUID.randomUUID());
+        e.setUserId(user.getId());
+        e.setAmount(25000);
+        e.setCategory("mother");
+        e.setIncurredOn(LocalDate.of(2026, 7, 1));
+        e.setDeletedAt(Instant.now().minus(10, ChronoUnit.DAYS)); // within 180-day TTL
+        em.persistAndFlush(e);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(em.find(com.momstarter.expense.Expense.class, e.getId())).isNotNull();
+    }
+
+    @Test
+    void purge_expenses_liveRow_notTouched() {
+        User user = savedUser("gc-expense-3@example.com");
+        com.momstarter.expense.Expense e = new com.momstarter.expense.Expense();
+        e.setId(UUID.randomUUID());
+        e.setUserId(user.getId());
+        e.setAmount(10000);
+        e.setCategory("other");
+        e.setIncurredOn(LocalDate.of(2026, 7, 1));
+        // deletedAt = null — live row
+        em.persistAndFlush(e);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(em.find(com.momstarter.expense.Expense.class, e.getId())).isNotNull();
     }
 
     // =========================================================================
