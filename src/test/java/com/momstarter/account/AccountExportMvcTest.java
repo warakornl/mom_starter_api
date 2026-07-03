@@ -265,6 +265,10 @@ class AccountExportMvcTest {
         ConsentRecord consentB = buildConsentRecord(userB.getId(), "general_health");
         consentRecords.saveAndFlush(consentB);
 
+        // User B's self_log — must NOT appear in user A's export (IDOR isolation for new collection)
+        SelfLog selfLogB = buildSelfLog(userB.getId(), "blood_pressure");
+        selfLogRepo.saveAndFlush(selfLogB);
+
         // User A's own supply item
         SupplyItem itemA = buildSupplyItem(userA.getId(), "UserA-item");
         supplyItems.saveAndFlush(itemA);
@@ -275,15 +279,18 @@ class AccountExportMvcTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.account.email").value("export-a@example.com"))
                 .andExpect(jsonPath("$.supplyItems.length()").value(1))
+                // userA has no self_logs seeded — userB's self_log must not leak across
+                .andExpect(jsonPath("$.selfLogs.length()").value(0))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
 
-        // A's export must not contain B's email or B's item name
+        // A's export must not contain B's email, B's item name, or B's self_log id
         org.assertj.core.api.Assertions.assertThat(body)
                 .contains("UserA-item")
                 .doesNotContain("export-b@example.com")
-                .doesNotContain("UserB-item");
+                .doesNotContain("UserB-item")
+                .doesNotContain(selfLogB.getId().toString());
     }
 
     // -------------------------------------------------------------------------

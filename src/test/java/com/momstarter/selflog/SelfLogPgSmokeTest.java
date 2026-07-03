@@ -3,10 +3,12 @@ package com.momstarter.selflog;
 import com.momstarter.account.AccountErasureService;
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
+import com.momstarter.sync.SyncCollection;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.annotation.Transactional;
@@ -94,6 +96,8 @@ class SelfLogPgSmokeTest {
     @Autowired private UserRepository users;
     @Autowired private SelfLogRepository selfLogs;
     @Autowired private AccountErasureService erasureService;
+    /** Production tombstone path — the same bean the sync engine calls at runtime. */
+    @Autowired @Qualifier("selfLogSyncCollection") private SyncCollection selfLogSyncCollection;
 
     private UUID userId;
 
@@ -171,9 +175,11 @@ class SelfLogPgSmokeTest {
      * is an explicit NULL write to the bytea value columns on tombstone. This test verifies
      * that the NULL persists to REAL Postgres (not H2) — H2's type coercion could mask issues.
      *
-     * <p>The crypto-shred is performed by {@code SelfLogSyncCollection.applyDelete()} which
-     * sets all four value columns to null before writing {@code deleted_at}. This test
-     * simulates that operation at the JPA level and reloads from the real Postgres DB.
+     * <p>The crypto-shred is exercised by calling the REAL production method
+     * {@code SelfLogSyncCollection.applyDelete()} — the exact same bean the sync engine
+     * dispatches at runtime. Calling the production path (not manually nulling fields) ensures
+     * a future regression in {@code applyDelete} (e.g. removing the null writes) will cause
+     * this test to fail rather than stay green.
      *
      * <p>PDPA compliance: ruling 2.2 / blocking criterion — "tombstone row retains no
      * recoverable plaintext". If bytea columns are NOT null after tombstone, the plaintext
@@ -194,15 +200,12 @@ class SelfLogPgSmokeTest {
         selfLogs.saveAndFlush(live);
         UUID logId = live.getId();
 
-        // Simulate crypto-shred: null all four bytea value columns + set deletedAt
-        // (mirrors SelfLogSyncCollection.applyDelete() — PDPA §4.4(A) / ruling 5a)
-        SelfLog toShred = selfLogs.findById(logId).orElseThrow();
-        toShred.setValueNumeric(null);
-        toShred.setValueNumericSecondary(null);
-        toShred.setValueText(null);
-        toShred.setNoteCipher(null);
-        toShred.setDeletedAt(Instant.now());
-        selfLogs.saveAndFlush(toShred);
+        // Invoke the REAL production shred path — SelfLogSyncCollection.applyDelete()
+        // (the same method the sync engine calls; same signature used at runtime).
+        // This is NOT a manual null-assignment simulation: if applyDelete() is later
+        // broken (e.g. null writes removed), this test will fail — not stay green.
+        SelfLog existing = selfLogs.findById(logId).orElseThrow();
+        selfLogSyncCollection.applyDelete(userId, logId, existing);
 
         // Reload from REAL Postgres (flush+clear defeats the L1 cache)
         selfLogs.findAll(); // force cache eviction via any query
