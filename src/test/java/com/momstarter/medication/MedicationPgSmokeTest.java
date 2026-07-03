@@ -4,6 +4,8 @@ import com.momstarter.account.AccountErasureService;
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
 import com.momstarter.sync.SyncCollection;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -105,6 +107,8 @@ class MedicationPgSmokeTest {
         }
     }
 
+    @PersistenceContext private EntityManager em;
+
     @Autowired private UserRepository users;
     @Autowired private MedicationPlanRepository plans;
     @Autowired private MedicationLogRepository logs;
@@ -178,6 +182,14 @@ class MedicationPgSmokeTest {
         logs.saveAndFlush(log);
         UUID logId = log.getId();
 
+        // Flush pending session state then evict the entire L1 persistence context.
+        // AccountErasureService deletes via JdbcTemplate (native SQL), which bypasses Hibernate.
+        // Without em.clear(), the post-purge findById calls return the stale L1-managed entities
+        // even though those rows were hard-deleted natively — causing isEmpty() to return false
+        // (a false failure on assertion (a)).  Mirror of AccountErasureServiceTest:167-168.
+        em.flush();
+        em.clear();
+
         // Run Tier-1 — must NOT throw FK violation; medication_log purged before medication_plan
         int purged = erasureService.purgeExpiredAccountChildren(180);
 
@@ -224,8 +236,13 @@ class MedicationPgSmokeTest {
         MedicationPlan existing = plans.findById(planId).orElseThrow();
         planSyncCollection.applyDelete(userId, planId, existing);
 
-        // Reload from REAL Postgres (flush+clear defeats L1 cache)
-        plans.findAll();  // force cache eviction
+        // Reload from REAL Postgres: em.flush() persists any buffered changes; em.clear() evicts
+        // all managed entities from the L1 persistence context so that the subsequent findById
+        // issues a genuine SELECT against Postgres rather than returning the stale in-memory entity.
+        // findAll() does NOT evict managed entities — findById after findAll() still returns the
+        // cached object.  Mirror of AccountErasureServiceTest:167-168.
+        em.flush();
+        em.clear();
         MedicationPlan reloaded = plans.findById(planId).orElseThrow();
 
         assertThat(reloaded.getNameCipher())
@@ -262,8 +279,11 @@ class MedicationPgSmokeTest {
         MedicationLog existing = logs.findById(logId).orElseThrow();
         logSyncCollection.applyDelete(userId, logId, existing);
 
-        // Reload from REAL Postgres
-        logs.findAll();  // force cache eviction
+        // Reload from REAL Postgres — evict L1 so findById goes to Postgres, not the stale
+        // managed entity (which already has null noteCipher in-memory after applyDelete).
+        // Mirror of AccountErasureServiceTest:167-168.
+        em.flush();
+        em.clear();
         MedicationLog reloaded = logs.findById(logId).orElseThrow();
 
         assertThat(reloaded.getNoteCipher())
@@ -311,8 +331,11 @@ class MedicationPgSmokeTest {
         plans.saveAndFlush(plan);
         UUID planId = plan.getId();
 
-        // Clear L1 cache so the reload goes to real Postgres
-        plans.findAll();
+        // Evict L1 so the reload goes to real Postgres and reads the stored jsonb value.
+        // findAll() does NOT evict managed entities; em.clear() is the correct mechanism.
+        // Mirror of AccountErasureServiceTest:167-168.
+        em.flush();
+        em.clear();
         MedicationPlan reloaded = plans.findById(planId).orElseThrow();
 
         // Postgres jsonb stores the value semantically equivalent (may normalise whitespace).
