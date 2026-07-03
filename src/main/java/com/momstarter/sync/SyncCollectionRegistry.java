@@ -43,7 +43,9 @@ public class SyncCollectionRegistry {
             "checklistItems",
             "kickCountSessions",
             "expenses",
-            "selfLogs");
+            "selfLogs",
+            "medicationPlans",
+            "medicationLogs");
 
     public SyncCollectionRegistry(List<SyncCollection> collections) {
         this.byName = collections.stream()
