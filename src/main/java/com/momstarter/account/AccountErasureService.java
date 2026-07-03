@@ -94,8 +94,14 @@ public class AccountErasureService {
             "reminder_occurrences",      // FK → users; reminder_id is a SOFT LINK (OQ-CAL-6)
             "checklist_items",           // FK → users; health collection (PDPA ม.26)
             "kick_count_session",        // FK → users; health data (PDPA ม.26)
-            "self_log"                   // FK → users; SD-5 health metrics (F1 fix — was missing;
+            "self_log",                  // FK → users; SD-5 health metrics (F1 fix — was missing;
                                          // omission caused Tier-2 DELETE users to FK-violate)
+            "medication_log",            // FK → medication_plan + users; SD-2 health data.
+                                         // MUST come BEFORE medication_plan (RULING 4):
+                                         // medication_log.medication_plan_id REFERENCES medication_plan(id).
+                                         // Deleting medication_plan first would FK-violate surviving log rows.
+            "medication_plan"            // FK → users; SD-2 health data.
+                                         // Must come AFTER medication_log (see above) and BEFORE users.
     );
 
     private final JdbcTemplate jdbc;
@@ -114,7 +120,8 @@ public class AccountErasureService {
      * <p>Tables purged (in FK-safe order): {@code auth_identity}, {@code password_reset_token},
      * {@code email_verification_token}, {@code refresh_token}, {@code pregnancy_profile},
      * {@code supply_items}, {@code expenses}, {@code reminders}, {@code reminder_occurrences},
-     * {@code checklist_items}, {@code kick_count_session}, {@code self_log}.
+     * {@code checklist_items}, {@code kick_count_session}, {@code self_log},
+     * {@code medication_log}, {@code medication_plan}.
      *
      * <p>Runs inside a single {@link Transactional} scope. A mid-sweep failure rolls back
      * the entire transaction — no partial deletions.

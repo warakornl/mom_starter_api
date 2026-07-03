@@ -22,6 +22,10 @@ import com.momstarter.reminder.ReminderOccurrenceRepository;
 import com.momstarter.reminder.ReminderRepository;
 import com.momstarter.expense.Expense;
 import com.momstarter.expense.ExpenseRepository;
+import com.momstarter.medication.MedicationLog;
+import com.momstarter.medication.MedicationLogRepository;
+import com.momstarter.medication.MedicationPlan;
+import com.momstarter.medication.MedicationPlanRepository;
 import com.momstarter.selflog.SelfLog;
 import com.momstarter.selflog.SelfLogRepository;
 import com.momstarter.supply.SupplyItem;
@@ -112,29 +116,35 @@ class AccountErasureServiceTest {
     @Autowired private ReminderOccurrenceRepository reminderOccurrences;
     @Autowired private ChecklistItemRepository checklistItems;
     @Autowired private KickCountSessionRepository kickSessions;
+    @Autowired private MedicationPlanRepository medicationPlans;
+    @Autowired private MedicationLogRepository medicationLogs;
 
     // =========================================================================
     // TIER-1: purgeExpiredAccountChildren
     // =========================================================================
 
     /**
-     * Tier-1 strengthened cascade test: seeds a row in EVERY Tier-1 child table (all 11,
-     * including self_log) plus a {@code consent_record}. Verifies that all 11 child-table
-     * rows are purged, while the {@code users} row and {@code consent_record} row are RETAINED.
+     * Tier-1 strengthened cascade test: seeds a row in EVERY Tier-1 child table (all 13,
+     * including self_log, medication_log, medication_plan) plus a {@code consent_record}.
+     * Verifies that all 13 child-table rows are purged while the {@code users} row and
+     * {@code consent_record} row are RETAINED.
      *
      * <p>If any table is missing from {@code TIER1_CHILD_DELETE_ORDER}, its row survives
      * and the corresponding {@code findById} assertion fails. FK violations on incorrect
-     * deletion order would also manifest as a {@code DataIntegrityViolationException}.
+     * deletion order also manifest as a {@code DataIntegrityViolationException}.
      *
-     * <p>self_log is the F1 fix: its FK → users means omitting it from TIER1_CHILD_DELETE_ORDER
-     * causes the subsequent Tier-2 DELETE users to raise an FK violation — account erasure fails.
+     * <p>FK-critical order for medication tables (RULING 4):
+     * {@code medication_log} MUST appear BEFORE {@code medication_plan} in
+     * {@link AccountErasureService#TIER1_CHILD_DELETE_ORDER} because
+     * {@code medication_log.medication_plan_id REFERENCES medication_plan(id)}.
+     * Reversing the order raises an FK violation and breaks account erasure.
      */
     @Test
     void purgeExpiredAccountChildren_tier1_cascadesAllChildTablesAndKeepsUserAndConsentRecord() {
         UUID userId = persistSoftDeletedUser("tier1-cascade@example.com",
                 Instant.now().minus(181, ChronoUnit.DAYS));
 
-        // Seed every Tier-1 child table (11 tables including self_log — F1 guard)
+        // Seed every Tier-1 child table (13 tables incl. self_log, medication_log, medication_plan)
         UUID profileId      = persistPregnancyProfile(userId);
         UUID authId         = persistAuthIdentity(userId);
         UUID pwdTokenId     = persistPasswordResetToken(userId);
@@ -146,7 +156,10 @@ class AccountErasureServiceTest {
         UUID occurrenceId   = persistReminderOccurrence(userId, reminderId);
         UUID checklistId    = persistChecklistItem(userId);
         UUID kickId         = persistKickCountSession(userId);
-        UUID selfLogId      = persistSelfLog(userId);          // F1: was missing, caused FK break
+        UUID selfLogId      = persistSelfLog(userId);      // F1: was missing, caused FK break
+        UUID planId         = persistMedicationPlan(userId);
+        // medication_log FK → medication_plan; must be deleted before the plan in Tier-1
+        UUID medLogId       = persistMedicationLog(userId, planId);
 
         // Also persist a consent_record — it must NOT be deleted by Tier-1
         UUID consentId = persistConsentRecord(userId);
@@ -158,7 +171,7 @@ class AccountErasureServiceTest {
 
         assertThat(processed).isEqualTo(1);
 
-        // All 12 Tier-1 child rows must be gone (11 child tables + self_log)
+        // All 13 Tier-1 child rows must be gone
         assertThat(profiles.findById(profileId)).isEmpty();
         assertThat(authIdentities.findById(authId)).isEmpty();
         assertThat(passwordResetTokens.findById(pwdTokenId)).isEmpty();
@@ -172,6 +185,12 @@ class AccountErasureServiceTest {
         assertThat(kickSessions.findById(kickId)).isEmpty();
         assertThat(selfLogRepo.findById(selfLogId))
                 .as("self_log (F1) — must be purged by Tier-1 to avoid FK break on DELETE users")
+                .isEmpty();
+        assertThat(medicationLogs.findById(medLogId))
+                .as("medication_log — must be purged BEFORE medication_plan (FK constraint)")
+                .isEmpty();
+        assertThat(medicationPlans.findById(planId))
+                .as("medication_plan — must be purged by Tier-1 (RULING 4 / FK → users)")
                 .isEmpty();
 
         // users row MUST be retained — it is the FK anchor until Tier-2 runs
@@ -468,5 +487,38 @@ class AccountErasureServiceTest {
         s.setLoggedAt(LocalDateTime.of(2026, 7, 1, 9, 0));
         s.setValueNumeric(new byte[]{1, 2, 3});  // non-null to satisfy empty_value guard
         return em.persistAndFlush(s).getId();
+    }
+
+    /**
+     * Persists a medication_plan row for the given user.
+     *
+     * <p>FK-order guard: {@code medication_plan} has {@code user_id REFERENCES users(id) ON DELETE
+     * RESTRICT}. Must be purged by Tier-1 AFTER {@code medication_log} (which has a hard FK into
+     * this table) and BEFORE Tier-2 deletes the users row (RULING 4).
+     */
+    private UUID persistMedicationPlan(UUID userId) {
+        MedicationPlan p = new MedicationPlan();
+        p.setId(UUID.randomUUID());
+        p.setUserId(userId);
+        p.setNameCipher(new byte[]{1, 2, 3});   // non-null: satisfies ck_medication_plan__live_name
+        p.setActive(true);
+        return em.persistAndFlush(p).getId();
+    }
+
+    /**
+     * Persists a medication_log row referencing the given plan.
+     *
+     * <p>FK-order guard: {@code medication_log.medication_plan_id REFERENCES medication_plan(id)}.
+     * Must be purged by Tier-1 BEFORE {@code medication_plan} is deleted (RULING 4), or the
+     * FK constraint causes erasure to fail with DataIntegrityViolationException.
+     */
+    private UUID persistMedicationLog(UUID userId, UUID medicationPlanId) {
+        MedicationLog l = new MedicationLog();
+        l.setId(UUID.randomUUID());
+        l.setUserId(userId);
+        l.setMedicationPlanId(medicationPlanId);
+        l.setStatus("taken");
+        l.setOccurrenceTime(LocalDateTime.of(2026, 7, 1, 9, 0));
+        return em.persistAndFlush(l).getId();
     }
 }
