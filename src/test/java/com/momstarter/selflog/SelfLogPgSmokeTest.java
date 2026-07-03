@@ -4,6 +4,8 @@ import com.momstarter.account.AccountErasureService;
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
 import com.momstarter.sync.SyncCollection;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -93,6 +95,8 @@ class SelfLogPgSmokeTest {
         }
     }
 
+    @PersistenceContext private EntityManager em;
+
     @Autowired private UserRepository users;
     @Autowired private SelfLogRepository selfLogs;
     @Autowired private AccountErasureService erasureService;
@@ -149,6 +153,14 @@ class SelfLogPgSmokeTest {
         log.setValueNumeric(new byte[]{10, 20, 30});   // plaintext bytes (MVP posture)
         selfLogs.saveAndFlush(log);
         UUID logId = log.getId();
+
+        // Flush pending session state then evict the entire L1 persistence context.
+        // AccountErasureService deletes via JdbcTemplate (native SQL), which bypasses Hibernate.
+        // Without em.clear(), the post-purge findById call returns the stale L1-managed entity
+        // even though the row was hard-deleted natively — causing isEmpty() to return false
+        // (a false failure on assertion (a)).  Mirror of AccountErasureServiceTest:167-168.
+        em.flush();
+        em.clear();
 
         // Run Tier-1 — must NOT throw FK violation; self_log must be purged first
         int purged = erasureService.purgeExpiredAccountChildren(180);
@@ -207,8 +219,14 @@ class SelfLogPgSmokeTest {
         SelfLog existing = selfLogs.findById(logId).orElseThrow();
         selfLogSyncCollection.applyDelete(userId, logId, existing);
 
-        // Reload from REAL Postgres (flush+clear defeats the L1 cache)
-        selfLogs.findAll(); // force cache eviction via any query
+        // Reload from REAL Postgres: em.flush() persists any buffered changes; em.clear() evicts
+        // all managed entities from the L1 persistence context so that the subsequent findById
+        // issues a genuine SELECT against Postgres rather than returning the stale in-memory
+        // entity (which already has null bytea columns in-memory after applyDelete).
+        // findAll() does NOT evict managed entities — findById after findAll() still returns the
+        // cached object.  Mirror of AccountErasureServiceTest:167-168.
+        em.flush();
+        em.clear();
         SelfLog reloaded = selfLogs.findById(logId).orElseThrow();
 
         assertThat(reloaded.getValueNumeric())
