@@ -432,6 +432,54 @@ class MedicationLogSyncMvcTest {
     }
 
     // -------------------------------------------------------------------------
+    // medication_plan_not_found — OWN plan that is tombstoned (not a live row)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Spec §A.1 rule 2 (from medication-behavior.md): "medicationPlanId present but not a
+     * live medication_plan row owned by the subject → validation_error(medication_plan_not_found)".
+     *
+     * <p>A tombstone has {@code deleted_at IS NOT NULL} — it is NOT a "live" row. Pushing a
+     * medicationLog that references the subject's OWN plan that has been tombstoned must
+     * therefore be rejected, not applied. This closes the ownership-check gap flagged in
+     * Task 3 review (the prior tests only covered another user's plan and a non-existent plan;
+     * neither covers the own-but-tombstoned case).
+     *
+     * <p>Tombstone state used here:
+     * {@code deleted_at = now(); name_cipher = null} (crypto-shred per §4.4(A)).
+     */
+    @Test
+    void push_medicationPlanNotFound_ownTombstonedPlan_rejected() throws Exception {
+        // Seed a live plan, then tombstone it (simulates client deleting the plan
+        // before the log arrives — a plausible offline-first race condition).
+        MedicationPlan ownPlan = seedPlan(userId);
+        ownPlan.setDeletedAt(Instant.now());
+        ownPlan.setNameCipher(null);    // crypto-shred: name bytes cleared on tombstone
+        planRepo.saveAndFlush(ownPlan);
+
+        UUID logId = UUID.randomUUID();
+
+        mvc.perform(post("/sync/push")
+                        .header("Authorization", "Bearer " + bearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(buildLogPushBody(
+                                List.of(buildLogRecord(logId, "taken", OCCURRENCE_TIME, null,
+                                        ownPlan.getId())),
+                                List.of(), List.of())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.rejected[0].collection").value("medicationLogs"))
+                .andExpect(jsonPath("$.rejected[0].id").value(logId.toString()))
+                .andExpect(jsonPath("$.rejected[0].code").value("validation_error"))
+                .andExpect(jsonPath("$.rejected[0].details").value("medication_plan_not_found"))
+                .andExpect(jsonPath("$.applied").isEmpty());
+
+        // The log row must NOT have been persisted (fail-closed ownership gate)
+        assertThat(logRepo.findById(logId))
+                .as("Log referencing own tombstoned plan must not be persisted")
+                .isEmpty();
+    }
+
+    // -------------------------------------------------------------------------
     // Ad-hoc log — null medicationPlanId is legal (E6)
     // -------------------------------------------------------------------------
 
