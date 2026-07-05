@@ -1,5 +1,6 @@
 package com.momstarter.auth;
 
+import com.momstarter.account.DekService;
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
 import com.momstarter.auth.dto.AuthTokens;
@@ -36,6 +37,7 @@ public class RegistrationService {
     private final JwtService jwt;
     private final RefreshTokenService refreshTokens;
     private final RateLimiter rateLimiter;
+    private final DekService dekService;
     private final int registerMaxPerIpPerMin;
     private final int resendMaxPerIpPerMin;
     private final int verifyEmailMaxPerIpPerMin;
@@ -50,6 +52,7 @@ public class RegistrationService {
                                JwtService jwt,
                                RefreshTokenService refreshTokens,
                                RateLimiter rateLimiter,
+                               DekService dekService,
                                @Value("${momstarter.ratelimit.register-per-ip-per-min:15}") int registerMaxPerIpPerMin,
                                @Value("${momstarter.ratelimit.resend-per-ip-per-min:10}") int resendMaxPerIpPerMin,
                                @Value("${momstarter.ratelimit.verify-email-per-ip-per-min:10}") int verifyEmailMaxPerIpPerMin,
@@ -62,6 +65,7 @@ public class RegistrationService {
         this.jwt = jwt;
         this.refreshTokens = refreshTokens;
         this.rateLimiter = rateLimiter;
+        this.dekService = dekService;
         this.registerMaxPerIpPerMin = registerMaxPerIpPerMin;
         this.resendMaxPerIpPerMin = resendMaxPerIpPerMin;
         this.verifyEmailMaxPerIpPerMin = verifyEmailMaxPerIpPerMin;
@@ -94,6 +98,16 @@ public class RegistrationService {
                         email);
                 user.setEmailVerified(true);
                 users.save(user);
+                // DEK provisioning — outside the user-save transaction (ADR IMPORTANT-4).
+                // KMS.GenerateDataKey is a blocking network round-trip; it must not hold a DB conn.
+                // Failure here is non-fatal: device can fetch DEK via GET /account/dek after login.
+                try {
+                    dekService.provisionDek(user.getId());
+                } catch (Exception e) {
+                    log.warn("DEK provisioning failed during auto-verify-email for userId={}; " +
+                             "device can re-fetch via GET /account/dek: {}",
+                             user.getId(), e.getMessage());
+                }
                 // No verification token issued, no email sent.
             } else {
                 user.setEmailVerified(false);
@@ -119,10 +133,17 @@ public class RegistrationService {
         });
     }
 
-    /** Consume the emailed token, mark the account verified, and mint its FIRST session (§G).
+    /**
+     * Consume the emailed token, mark the account verified, and mint its FIRST session (§G).
      *
      * <p>Rate-limited per IP (contract §H): guards against token guessing (128-bit token is
-     * already strong, but rate-limit adds defence-in-depth at parity with reset-password). */
+     * already strong, but rate-limit adds defence-in-depth at parity with reset-password).
+     *
+     * <p>DEK provisioning (ADR Decision 2, IMPORTANT-4): after the user row is saved (committed),
+     * {@code KMS.GenerateDataKey} is called <em>outside</em> the user-update transaction. A
+     * KMS failure is caught and logged — it does NOT fail the verification. The device can
+     * fetch the DEK via {@code GET /v1/account/dek} on its next authenticated request.
+     */
     public AuthTokens verifyEmail(VerifyEmailRequest req, String clientIp) {
         rateLimiter.check("verify-email-ip:" + clientIp, verifyEmailMaxPerIpPerMin, Duration.ofMinutes(1));
         UUID userId = emailVerification.consume(req.token());
@@ -130,6 +151,20 @@ public class RegistrationService {
                 .orElseThrow(() -> new ApiException(410, "verify_token_invalid"));
         user.setEmailVerified(true);
         users.save(user);
+
+        // DEK provisioning — OUTSIDE the user-update transaction (ADR IMPORTANT-4).
+        // users.save() above has already committed. The KMS GenerateDataKey call happens here,
+        // not inside a held DB connection. ON CONFLICT (user_id) DO NOTHING makes this idempotent.
+        // Use `userId` (from emailVerification.consume) — same value as user.getId() but
+        // always non-null in both production and unit tests.
+        // Failure is non-fatal: the user still gets tokens; device fetches DEK via GET /account/dek.
+        try {
+            dekService.provisionDek(userId);
+        } catch (Exception e) {
+            log.warn("DEK provisioning failed during email verification for userId={}; " +
+                     "device can re-fetch via GET /account/dek: {}",
+                     userId, e.getMessage());
+        }
 
         RefreshTokenService.Issued issued = refreshTokens.mintFamily(user.getId(), req.deviceId(), null);
         String accessToken = jwt.issueAccessToken(user.getId(), true);

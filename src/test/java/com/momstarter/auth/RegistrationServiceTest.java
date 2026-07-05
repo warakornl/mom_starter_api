@@ -1,5 +1,6 @@
 package com.momstarter.auth;
 
+import com.momstarter.account.DekService;
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
 import com.momstarter.auth.dto.RegisterRequest;
@@ -35,10 +36,11 @@ class RegistrationServiceTest {
     private final JwtService jwt = mock(JwtService.class);
     private final RefreshTokenService refreshTokens = mock(RefreshTokenService.class);
     private final RateLimiter rateLimiter = mock(RateLimiter.class);
+    private final DekService dekService = mock(DekService.class);
 
     private final RegistrationService service = new RegistrationService(
             users, encoder, passwordPolicy, emailVerification, sender, jwt, refreshTokens,
-            rateLimiter, 1_000_000, 1_000_000, 1_000_000, false);
+            rateLimiter, dekService, 1_000_000, 1_000_000, 1_000_000, false);
 
     @Test
     void collidingEmail_stillRunsBcrypt_andCreatesNoUser() {
