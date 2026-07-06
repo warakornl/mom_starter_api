@@ -1,39 +1,51 @@
 package com.momstarter.account.dto.export;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Medication plan fields exported for PDPA ม.30/31 data portability (Slice 2 Task 5).
+ * Medication plan fields exported for PDPA ม.30/31 data portability (Slice 2 Task 5,
+ * DEK-aware export).
+ *
+ * <h2>DEK-aware: cipher fields are decrypted readable strings (not raw bytes)</h2>
+ * <p>Under Phase-1 DEK-aware export (ADR Decision 5), the server unwraps the account's
+ * per-account DEK and applies the Decision-4 version dispatch. The medication name and dose
+ * are emitted as decrypted {@code String} values — NOT raw Base64-encoded cipher bytes.
  *
  * <p>SD-2 health collection: medication schedule — {@code medication_plan} table.
- * Both bytea cipher columns are included verbatim (Jackson serialises {@code byte[]}
- * as Base64-encoded strings):
+ *
+ * <h2>Fields</h2>
  * <ul>
- *   <li>Under the MVP no-op cipher posture (ADR RULING 1), these columns hold PLAINTEXT
- *       bytes — the export is machine-readable and meaningful for PDPA ม.30 data access +
- *       ม.31 portability.</li>
- *   <li>When real AES-GCM encryption lands (deferred KMS/EAS milestone), the client's
- *       decryption path makes the bytes interpretable; the wire format is stable
- *       (Base64 bytes in the same fields — zero contract change).</li>
+ *   <li>{@link #name} — decrypted medication name (from {@code name_cipher}).
+ *       {@code null} on tombstoned rows (crypto-shredded §4.4(A)).</li>
+ *   <li>{@link #dose} — decrypted dosage description (from {@code dose_cipher}).
+ *       Genuinely optional (nullable) — not all plans have an explicit dose.</li>
+ *   <li>{@link #scheduleRule} — FLAG-4 recurrence grammar (jsonb). Exported verbatim —
+ *       the user's medication schedule is personal data subject to ม.30/31 portability.</li>
  * </ul>
  *
- * <p>Tombstoned rows are included: {@link #nameCipher} and {@link #doseCipher} will be
- * {@code null} (crypto-shredded per §4.4(A) / PDPA ruling 5a), while structural sync
- * fields ({@link #id}, {@link #scheduleRule}, {@link #active}, {@link #deletedAt})
- * survive to serve as evidence that the record existed and was deleted.
- *
- * <p>{@link #scheduleRule} is the FLAG-4 recurrence grammar stored as a JSON string
- * (jsonb in PostgreSQL). Exported verbatim — the user's medication schedule is personal
- * data subject to ม.30/31 portability.
+ * <p>Tombstoned rows are included: {@link #name} and {@link #dose} will be {@code null}
+ * (crypto-shredded per §4.4(A) / PDPA ruling 5a); structural sync fields ({@link #id},
+ * {@link #scheduleRule}, {@link #active}, {@link #deletedAt}) survive.
  *
  * <p>Excludes: {@code userId} (implicit from the export envelope), {@code version} and
  * {@code clientId} (internal sync metadata not meaningful to the user).
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record MedicationPlanExportEntry(
         UUID id,
-        byte[] nameCipher,
-        byte[] doseCipher,
+        /**
+         * Decrypted medication name. Decrypted from {@code medication_plan.name_cipher}.
+         * {@code null} on tombstoned rows (crypto-shredded per §4.4(A)).
+         */
+        String name,
+        /**
+         * Decrypted dosage description. Decrypted from {@code medication_plan.dose_cipher}.
+         * {@code null} when not specified or on tombstoned rows.
+         */
+        String dose,
         String scheduleRule,
         boolean active,
         UUID sourceSuggestionStateId,

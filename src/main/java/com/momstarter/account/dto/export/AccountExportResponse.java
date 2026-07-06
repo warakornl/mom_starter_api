@@ -16,11 +16,17 @@ import java.util.List;
  * <p>Secrets that are NEVER exported:
  * <ul>
  *   <li>{@code users.password_hash} — credential material</li>
- *   <li>{@code kick_count_session.note_cipher} — client-encrypted blob that cannot be
- *       decrypted without the per-account DEK; exporting cipher without key is useless
- *       and potentially reveals crypto metadata</li>
  *   <li>Auth tokens (refresh, email-verification, password-reset) — ephemeral credentials</li>
+ *   <li>Raw cipher bytes — all {@code *_cipher} columns are DECRYPTED server-side before
+ *       export (DEK-aware export, ADR Decision 5); the JSON carries readable plaintext strings,
+ *       never opaque Base64 cipher bytes.</li>
  * </ul>
+ *
+ * <p>DEK-aware export (Phase-1 sub-slice): {@code AccountExportService} loads the account's
+ * {@code account_dek} wrapped-DEK, unwraps it via {@code KmsClient.decryptDek}, and applies
+ * the Decision-4 version dispatch on every cipher field. Legacy UNVERSIONED rows decode
+ * gracefully without a DEK; real 0x01-GCM envelopes are AES-256-GCM decrypted. The DEK
+ * is transient in memory and NEVER logged or emitted.
  *
  * <p>Soft-deleted records (tombstones) ARE included: PDPA ม.30 covers all data the
  * controller holds on the user, including records in the pre-erasure window before the
@@ -84,7 +90,10 @@ public record AccountExportResponse(
          *
          * <p>Size note: sessions accumulate daily during pregnancy (≈270 max for a full term),
          * so this array is naturally bounded for a single user.
-         * {@code note_cipher} is NEVER included — see class Javadoc.
+         *
+         * <p>Each entry includes a {@code note} field (decrypted from {@code note_cipher}) when
+         * a note was recorded — re-included per ADR IMPORTANT-5 / ม.30 completeness requirement.
+         * {@code null} note means no note was set or the cipher was crypto-shredded (tombstone).
          */
         List<KickCountSessionExportEntry> kickCountSessions,
 
@@ -92,13 +101,13 @@ public record AccountExportResponse(
          * All self-log health records (live + tombstoned). Empty list when none exist.
          *
          * <p>MOTHER-health collection (SD-5): weight, blood_pressure, swelling, lochia, symptom.
-         * All four bytea value columns ({@code valueNumeric}, {@code valueNumericSecondary},
-         * {@code valueText}, {@code noteCipher}) are included verbatim as Base64-encoded bytes
-         * (F3 fix — PDPA ม.30 portability requires access to the actual health measurements).
+         * All four cipher value fields are DEK-decrypted and emitted as readable {@code String}
+         * values: {@code valueNumeric}, {@code valueNumericSecondary}, {@code valueText},
+         * {@code note} (from {@code note_cipher}).
+         * (F3 fix — PDPA ม.30 portability requires access to the actual health measurements.)
          *
-         * <p>Under the MVP no-op cipher posture, these bytes are plaintext-readable.
-         * On tombstoned rows, the bytea columns are {@code null} (crypto-shredded on tombstone
-         * per §4.4(A) / PDPA ruling 5a); only structural sync columns survive.
+         * <p>On tombstoned rows, the cipher columns are {@code null} (crypto-shredded per §4.4(A)
+         * / PDPA ruling 5a); only structural sync columns survive.
          */
         List<SelfLogExportEntry> selfLogs,
 
@@ -106,11 +115,11 @@ public record AccountExportResponse(
          * All medication plans (live + tombstoned). Empty list when none exist.
          *
          * <p>SD-2 health collection: medication schedule records.
-         * {@code nameCipher} and {@code doseCipher} are included verbatim as Base64-encoded
-         * bytes (PDPA ม.30 — the user has the right to access their medication schedule).
+         * {@code name} (from {@code name_cipher}) and {@code dose} (from {@code dose_cipher})
+         * are DEK-decrypted and emitted as readable strings (PDPA ม.30 access right).
          * {@code scheduleRule} is the FLAG-4 recurrence grammar (JSON string).
          *
-         * <p>On tombstoned rows, {@code nameCipher}/{@code doseCipher} are {@code null}
+         * <p>On tombstoned rows, {@code name}/{@code dose} are {@code null}
          * (crypto-shredded per §4.4(A)); structural fields survive.
          */
         List<MedicationPlanExportEntry> medicationPlans,
@@ -119,10 +128,11 @@ public record AccountExportResponse(
          * All medication logs / dose-event records (live + tombstoned). Empty list when none exist.
          *
          * <p>SD-2 health collection: taken/missed dose events.
-         * {@code noteCipher} is included verbatim as Base64-encoded bytes (PDPA ม.30 portability).
+         * {@code note} (from {@code note_cipher}) is DEK-decrypted and emitted as a readable
+         * string (PDPA ม.30 portability).
          * {@code occurrenceTime} is floating-civil (FLAG-1); {@code loggedAt} is server-UTC (D5).
          *
-         * <p>On tombstoned rows, {@code noteCipher} is {@code null} (crypto-shredded per §4.4(A));
+         * <p>On tombstoned rows, {@code note} is {@code null} (crypto-shredded per §4.4(A));
          * structural fields survive.
          */
         List<MedicationLogExportEntry> medicationLogs,
