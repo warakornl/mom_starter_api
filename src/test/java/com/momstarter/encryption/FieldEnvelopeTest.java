@@ -389,6 +389,87 @@ class FieldEnvelopeTest {
     }
 
     // -----------------------------------------------------------------------
+    // 8. DEK length guard — AES-256-only invariant
+    //    16-byte and 24-byte DEKs MUST be rejected with SecurityException
+    //    on both encrypt and decrypt. Only 32-byte DEKs are accepted.
+    //    Without this guard, SecretKeySpec silently accepts 16/24/32-byte keys,
+    //    producing AES-128/192-GCM — a silent security downgrade with no error.
+    // -----------------------------------------------------------------------
+
+    @Test
+    @DisplayName("DEK guard — 16-byte DEK rejected on encrypt with SecurityException")
+    void dekGuard_16byteDek_encrypt_throws() {
+        byte[] shortDek = new byte[16];
+        assertThatThrownBy(() ->
+                FieldEnvelope.encrypt("hello".getBytes(StandardCharsets.UTF_8), shortDek, SAMPLE_AAD))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("32 bytes");
+    }
+
+    @Test
+    @DisplayName("DEK guard — 16-byte DEK rejected on decrypt with SecurityException")
+    void dekGuard_16byteDek_decrypt_throws() {
+        // Build a minimal well-formed envelope (29 bytes) so we reach the DEK guard
+        byte[] shortDek = new byte[16];
+        byte[] minEnvelope = new byte[29];
+        minEnvelope[0] = 0x01; // valid version byte
+        assertThatThrownBy(() ->
+                FieldEnvelope.decrypt(minEnvelope, shortDek, SAMPLE_AAD))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("32 bytes");
+    }
+
+    @Test
+    @DisplayName("DEK guard — 24-byte DEK rejected on encrypt with SecurityException")
+    void dekGuard_24byteDek_encrypt_throws() {
+        byte[] mediumDek = new byte[24];
+        assertThatThrownBy(() ->
+                FieldEnvelope.encrypt("hello".getBytes(StandardCharsets.UTF_8), mediumDek, SAMPLE_AAD))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("32 bytes");
+    }
+
+    @Test
+    @DisplayName("DEK guard — 24-byte DEK rejected on decrypt with SecurityException")
+    void dekGuard_24byteDek_decrypt_throws() {
+        byte[] mediumDek = new byte[24];
+        byte[] minEnvelope = new byte[29];
+        minEnvelope[0] = 0x01;
+        assertThatThrownBy(() ->
+                FieldEnvelope.decrypt(minEnvelope, mediumDek, SAMPLE_AAD))
+                .isInstanceOf(SecurityException.class)
+                .hasMessageContaining("32 bytes");
+    }
+
+    @Test
+    @DisplayName("DEK guard — null DEK rejected on encrypt with SecurityException")
+    void dekGuard_nullDek_encrypt_throws() {
+        assertThatThrownBy(() ->
+                FieldEnvelope.encrypt("hello".getBytes(StandardCharsets.UTF_8), null, SAMPLE_AAD))
+                .isInstanceOf(SecurityException.class);
+    }
+
+    @Test
+    @DisplayName("DEK guard — null DEK rejected on decrypt with SecurityException")
+    void dekGuard_nullDek_decrypt_throws() {
+        byte[] minEnvelope = new byte[29];
+        minEnvelope[0] = 0x01;
+        assertThatThrownBy(() ->
+                FieldEnvelope.decrypt(minEnvelope, null, SAMPLE_AAD))
+                .isInstanceOf(SecurityException.class);
+    }
+
+    @Test
+    @DisplayName("DEK guard — 32-byte DEK is accepted and produces correct round-trip")
+    void dekGuard_32byteDek_accepted() {
+        byte[] dek32 = new byte[32];
+        byte[] plaintext = "hello".getBytes(StandardCharsets.UTF_8);
+        byte[] envelope = FieldEnvelope.encrypt(plaintext, dek32, SAMPLE_AAD);
+        byte[] decrypted = FieldEnvelope.decrypt(envelope, dek32, SAMPLE_AAD);
+        assertThat(decrypted).isEqualTo(plaintext);
+    }
+
+    // -----------------------------------------------------------------------
     // Helper
     // -----------------------------------------------------------------------
 

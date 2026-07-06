@@ -70,8 +70,30 @@ public final class FieldEnvelope {
      */
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
+    /** AES-256 requires exactly 32 bytes (256 bits). */
+    private static final int DEK_LENGTH_BYTES = 32;
+
     private FieldEnvelope() {
         // utility class — no instances
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal guards
+    // -----------------------------------------------------------------------
+
+    /**
+     * Validates that {@code dek} is exactly 32 bytes, enforcing the AES-256-only invariant.
+     *
+     * <p>Without this guard, {@link SecretKeySpec} silently accepts 16/24/32-byte keys,
+     * producing AES-128/192-GCM instead of AES-256-GCM — a silent security downgrade.
+     *
+     * @param dek the DEK bytes to validate
+     * @throws SecurityException if {@code dek} is {@code null} or not exactly 32 bytes
+     */
+    private static void requireAes256Dek(byte[] dek) {
+        if (dek == null || dek.length != DEK_LENGTH_BYTES) {
+            throw new SecurityException("DEK must be 32 bytes (AES-256)");
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -92,6 +114,7 @@ public final class FieldEnvelope {
      * @throws SecurityException if the JCE call fails (should not occur with valid 256-bit DEK)
      */
     public static byte[] encrypt(byte[] plaintext, byte[] dek, FieldAad aad) {
+        requireAes256Dek(dek);
         byte[] iv = new byte[IV_LENGTH_BYTES];
         SECURE_RANDOM.nextBytes(iv);
         return encryptWithIv(plaintext, dek, aad, iv);
@@ -116,6 +139,7 @@ public final class FieldEnvelope {
      *                           the GCM tag verification fails, or the DEK/AAD are wrong
      */
     public static byte[] decrypt(byte[] envelope, byte[] dek, FieldAad aad) {
+        requireAes256Dek(dek);
         if (envelope.length < MIN_ENVELOPE_LENGTH) {
             throw new SecurityException(
                     "Field envelope too short (" + envelope.length + " bytes; minimum " + MIN_ENVELOPE_LENGTH + ")");
@@ -165,6 +189,7 @@ public final class FieldEnvelope {
      * @return envelope bytes: {@code 0x01 || iv(12) || ciphertext(N) || tag(16)}
      */
     static byte[] encryptWithIv(byte[] plaintext, byte[] dek, FieldAad aad, byte[] iv) {
+        requireAes256Dek(dek);
         if (iv.length != IV_LENGTH_BYTES) {
             throw new IllegalArgumentException(
                     "IV must be exactly " + IV_LENGTH_BYTES + " bytes, got " + iv.length);
