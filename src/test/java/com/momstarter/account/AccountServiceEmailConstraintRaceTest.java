@@ -39,7 +39,8 @@ class AccountServiceEmailConstraintRaceTest {
     void setup() {
         users = mock(UserRepository.class);
         refreshTokens = mock(RefreshTokenService.class);
-        service = new AccountService(users, refreshTokens);
+        AccountDekRepository accountDekRepository = mock(AccountDekRepository.class);
+        service = new AccountService(users, refreshTokens, accountDekRepository);
     }
 
     @Test

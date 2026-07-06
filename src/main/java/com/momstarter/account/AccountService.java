@@ -50,10 +50,13 @@ public class AccountService {
 
     private final UserRepository users;
     private final RefreshTokenService refreshTokens;
+    private final AccountDekRepository accountDekRepository;
 
-    public AccountService(UserRepository users, RefreshTokenService refreshTokens) {
+    public AccountService(UserRepository users, RefreshTokenService refreshTokens,
+                          AccountDekRepository accountDekRepository) {
         this.users = users;
         this.refreshTokens = refreshTokens;
+        this.accountDekRepository = accountDekRepository;
     }
 
     // -------------------------------------------------------------------------
@@ -195,6 +198,20 @@ public class AccountService {
         user.setDeletedAt(Instant.now());
         user.setStatus("deleted");
         users.saveAndFlush(user);
+
+        // T0 CRYPTO-SHRED (field-encryption sub-slice c, ADR CRITICAL-1):
+        // Hard-delete the per-account wrapped-DEK row immediately after setStatus("deleted").
+        // Once this row is gone, KMS.Decrypt(wrappedDek) becomes impossible, rendering
+        // ALL *_cipher bytes across every health table irrecoverable AT ONCE.
+        //
+        // Must fire HERE (in the online DELETE /account handler), NOT in AccountErasureService —
+        // deferring to the scheduled GC would delay destruction by up to 180 days, destroying
+        // the "immediately irrecoverable at T0" PDPA guarantee (ADR CRITICAL-1).
+        //
+        // Runs inside this @Transactional method: if this call throws, Spring rolls back the
+        // entire transaction (including the setStatus("deleted") flush above) — fail-closed.
+        // Idempotent: 0 rows deleted if the DEK was already shredded or never provisioned.
+        accountDekRepository.deleteByUserId(userId);
 
         // Revoke every refresh-token family: blocks all devices from refreshing.
         // Access tokens are stateless (≤15 min) and expire naturally.

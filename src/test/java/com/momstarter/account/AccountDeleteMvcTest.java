@@ -3,6 +3,8 @@ package com.momstarter.account;
 import com.momstarter.auth.JwtService;
 import com.momstarter.auth.RefreshTokenRepository;
 import com.momstarter.auth.RefreshTokenService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +53,10 @@ class AccountDeleteMvcTest {
     private RefreshTokenRepository tokens;
     @Autowired
     private PasswordEncoder encoder;
+    @Autowired
+    private AccountDekRepository accountDekRepository;
+    @PersistenceContext
+    private EntityManager em;
 
     private User user;
     private String bearer;
@@ -140,8 +146,78 @@ class AccountDeleteMvcTest {
     }
 
     // -------------------------------------------------------------------------
+    // Crypto-shred wiring (sub-slice c) — tests (a) and (b)
+    // -------------------------------------------------------------------------
+
+    /**
+     * (a) T0 crypto-shred: after {@code DELETE /account}, the {@code account_dek} row for the
+     * authenticated user MUST be hard-deleted in the same transaction as
+     * {@code setStatus("deleted")} (ADR CRITICAL-1 / migration-design T0 sequence).
+     *
+     * <p>Proves: the wrapped-DEK row is gone immediately after account deletion — KMS.Decrypt
+     * would subsequently be impossible, making all *_cipher bytes irrecoverable at T0.
+     *
+     * <p>TDD: test written before {@link AccountService} calls
+     * {@link AccountDekRepository#deleteByUserId}. It fails until that call is wired.
+     */
+    @Test
+    void delete_t0CryptoShred_deletesAccountDekRow() throws Exception {
+        AccountDek dek = buildTestDek(user.getId());
+        accountDekRepository.saveAndFlush(dek);
+
+        mvc.perform(delete("/account").header("Authorization", bearer))
+                .andExpect(status().isAccepted());
+
+        // Clear L1 cache so findById issues a fresh SELECT (not cached entity).
+        // Matches the pattern in SelfLogPgSmokeTest / AccountErasureServiceTest.
+        em.flush();
+        em.clear();
+
+        assertThat(accountDekRepository.findById(user.getId()))
+                .as("T0 crypto-shred: account_dek row must be hard-deleted (ADR CRITICAL-1)")
+                .isEmpty();
+    }
+
+    /**
+     * (b) Idempotent DEK delete: an account with no provisioned DEK row can be deleted without
+     * error — {@link AccountDekRepository#deleteByUserId} is a no-op when the row is absent
+     * (0 rows deleted, no exception). This covers late-lifecycle accounts that were never
+     * fully provisioned, and ensures the crypto-shred wiring doesn't break the delete path.
+     */
+    @Test
+    void delete_noDekRow_cryptoShredIsNoOp_succeeds() throws Exception {
+        // Confirm no DEK row exists for this user
+        assertThat(accountDekRepository.findById(user.getId())).isEmpty();
+
+        mvc.perform(delete("/account").header("Authorization", bearer))
+                .andExpect(status().isAccepted());
+
+        em.flush();
+        em.clear();
+
+        // User is soft-deleted; DEK row was never there and still isn't
+        User found = users.findById(user.getId()).orElseThrow();
+        assertThat(found.getDeletedAt()).isNotNull();
+        assertThat(found.getStatus()).isEqualTo("deleted");
+        assertThat(accountDekRepository.findById(user.getId())).isEmpty();
+    }
+
+    // -------------------------------------------------------------------------
     // FIX C coverage additions
     // -------------------------------------------------------------------------
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private AccountDek buildTestDek(java.util.UUID userId) {
+        AccountDek dek = new AccountDek();
+        dek.setUserId(userId);
+        dek.setWrappedDek(new byte[]{1, 2, 3, 4});
+        dek.setKmsKeyId("mock-cmk/test");
+        dek.setWrapContext("accountId=" + userId);
+        return dek;
+    }
 
     @Test
     void delete_idor_tokenOnlyDeletesOwnAccount() throws Exception {

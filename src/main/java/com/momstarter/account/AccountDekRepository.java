@@ -45,7 +45,7 @@ public interface AccountDekRepository extends JpaRepository<AccountDek, UUID> {
      *
      * @param userId the account whose DEK row should be hard-deleted
      */
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query("DELETE FROM AccountDek d WHERE d.userId = :userId")
     void deleteByUserId(@Param("userId") UUID userId);
 }
