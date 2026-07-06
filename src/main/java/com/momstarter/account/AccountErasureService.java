@@ -83,6 +83,16 @@ public class AccountErasureService {
      * so that a forgotten table causes that test to fail.
      */
     static final List<String> TIER1_CHILD_DELETE_ORDER = List.of(
+            "account_dek",               // FK → users(id) ON DELETE RESTRICT. Belt-and-suspenders
+                                         // crypto-shred backstop (ADR IMPORTANT-1, sub-slice c):
+                                         // T0 (AccountService.deleteAccount) hard-deletes this row
+                                         // immediately on the online path. This entry ensures any row
+                                         // that survived T0 (e.g., crash-interrupted) is cleaned here
+                                         // so the Tier-2 DELETE FROM users does NOT FK-violate.
+                                         // Same failure class as self_log F1 fix (lines below):
+                                         // "omission caused Tier-2 DELETE users to FK-violate".
+                                         // Leaf table — nothing references account_dek; it is safe
+                                         // as the first entry (no inbound FK dependencies).
             "auth_identity",             // FK → users (federated provider link)
             "password_reset_token",      // FK → users (single-use password-reset tokens)
             "email_verification_token",  // FK → users (email verification tokens)
@@ -117,7 +127,8 @@ public class AccountErasureService {
      * are intentionally <strong>retained</strong> — they are cleaned up by
      * {@link #purgeLegalHoldAccounts(int)} at the legal-hold threshold (~1yr).
      *
-     * <p>Tables purged (in FK-safe order): {@code auth_identity}, {@code password_reset_token},
+     * <p>Tables purged (in FK-safe order): {@code account_dek} (crypto-shred backstop —
+     * ADR IMPORTANT-1), {@code auth_identity}, {@code password_reset_token},
      * {@code email_verification_token}, {@code refresh_token}, {@code pregnancy_profile},
      * {@code supply_items}, {@code expenses}, {@code reminders}, {@code reminder_occurrences},
      * {@code checklist_items}, {@code kick_count_session}, {@code self_log},

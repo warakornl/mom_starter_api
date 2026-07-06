@@ -8,6 +8,8 @@ import com.momstarter.auth.PasswordResetToken;
 import com.momstarter.auth.PasswordResetTokenRepository;
 import com.momstarter.auth.RefreshToken;
 import com.momstarter.auth.RefreshTokenRepository;
+import com.momstarter.account.AccountDek;
+import com.momstarter.account.AccountDekRepository;
 import com.momstarter.checklist.ChecklistItem;
 import com.momstarter.checklist.ChecklistItemRepository;
 import com.momstarter.consent.ConsentRecord;
@@ -118,33 +120,43 @@ class AccountErasureServiceTest {
     @Autowired private KickCountSessionRepository kickSessions;
     @Autowired private MedicationPlanRepository medicationPlans;
     @Autowired private MedicationLogRepository medicationLogs;
+    @Autowired private AccountDekRepository accountDekRepository;
 
     // =========================================================================
     // TIER-1: purgeExpiredAccountChildren
     // =========================================================================
 
     /**
-     * Tier-1 strengthened cascade test: seeds a row in EVERY Tier-1 child table (all 13,
-     * including self_log, medication_log, medication_plan) plus a {@code consent_record}.
-     * Verifies that all 13 child-table rows are purged while the {@code users} row and
-     * {@code consent_record} row are RETAINED.
+     * Tier-1 strengthened cascade test: seeds a row in EVERY Tier-1 child table (all 15,
+     * including account_dek, self_log, medication_log, medication_plan) plus a
+     * {@code consent_record}. Verifies that all 15 child-table rows are purged while the
+     * {@code users} row and {@code consent_record} row are RETAINED.
      *
      * <p>If any table is missing from {@code TIER1_CHILD_DELETE_ORDER}, its row survives
      * and the corresponding {@code findById} assertion fails. FK violations on incorrect
      * deletion order also manifest as a {@code DataIntegrityViolationException}.
+     *
+     * <p>FK-critical: {@code account_dek} (first entry — belt-and-suspenders crypto-shred
+     * backstop; ADR IMPORTANT-1). Omission would cause the Tier-2 {@code DELETE FROM users}
+     * to FK-violate if a row survived T0 (same failure class as self_log F1 fix).
      *
      * <p>FK-critical order for medication tables (RULING 4):
      * {@code medication_log} MUST appear BEFORE {@code medication_plan} in
      * {@link AccountErasureService#TIER1_CHILD_DELETE_ORDER} because
      * {@code medication_log.medication_plan_id REFERENCES medication_plan(id)}.
      * Reversing the order raises an FK violation and breaks account erasure.
+     *
+     * <p>TDD (sub-slice c): {@code account_dek} row seeded and assertion added BEFORE
+     * {@code "account_dek"} was added to {@code TIER1_CHILD_DELETE_ORDER}. The test
+     * fails until that entry is present.
      */
     @Test
     void purgeExpiredAccountChildren_tier1_cascadesAllChildTablesAndKeepsUserAndConsentRecord() {
         UUID userId = persistSoftDeletedUser("tier1-cascade@example.com",
                 Instant.now().minus(181, ChronoUnit.DAYS));
 
-        // Seed every Tier-1 child table (13 tables incl. self_log, medication_log, medication_plan)
+        // Seed every Tier-1 child table (15 tables, incl. account_dek, self_log, medication_*)
+        UUID dekId          = persistAccountDek(userId);   // crypto-shred backstop (sub-slice c)
         UUID profileId      = persistPregnancyProfile(userId);
         UUID authId         = persistAuthIdentity(userId);
         UUID pwdTokenId     = persistPasswordResetToken(userId);
@@ -171,7 +183,13 @@ class AccountErasureServiceTest {
 
         assertThat(processed).isEqualTo(1);
 
-        // All 13 Tier-1 child rows must be gone
+        // account_dek — Tier-1 FK backstop (belt-and-suspenders for T0 crypto-shred)
+        assertThat(accountDekRepository.findById(dekId))
+                .as("account_dek (crypto-shred backstop) — must be purged by Tier-1 to avoid "
+                        + "FK violation on Tier-2 DELETE FROM users (ADR IMPORTANT-1)")
+                .isEmpty();
+
+        // All other 14 Tier-1 child rows must be gone
         assertThat(profiles.findById(profileId)).isEmpty();
         assertThat(authIdentities.findById(authId)).isEmpty();
         assertThat(passwordResetTokens.findById(pwdTokenId)).isEmpty();
@@ -251,6 +269,46 @@ class AccountErasureServiceTest {
         int processed = erasureService.purgeExpiredAccountChildren(180);
 
         assertThat(processed).isEqualTo(2);
+    }
+
+    /**
+     * Tier-1 FK-backstop test (sub-slice c, ADR IMPORTANT-1): a surviving {@code account_dek}
+     * row — e.g., from a crash-interrupted T0 — is cleaned by Tier-1 so that the subsequent
+     * Tier-2 {@code DELETE FROM users} does NOT FK-violate.
+     *
+     * <p>Simulates the exact failure scenario: account_dek row survives to the Tier-1 window
+     * (T0 did not fire, or was interrupted), Tier-1 backstop deletes it, then Tier-2 can
+     * safely delete the users row without a {@code DataIntegrityViolationException}.
+     *
+     * <p>TDD: test written BEFORE {@code "account_dek"} was added to
+     * {@code TIER1_CHILD_DELETE_ORDER}. It fails until that entry is present.
+     */
+    @Test
+    void purgeExpiredAccountChildren_tier1_accountDekBackstop_allowsTier2ToDeleteUsers() {
+        UUID userId = persistSoftDeletedUser("dek-backstop@example.com",
+                Instant.now().minus(366, ChronoUnit.DAYS)); // past both 180d and 365d thresholds
+        UUID dekId = persistAccountDek(userId);
+        UUID consentId = persistConsentRecord(userId);
+        em.flush();
+        em.clear();
+
+        // Tier-1 must clean up account_dek (belt-and-suspenders backstop)
+        int tier1Count = erasureService.purgeExpiredAccountChildren(180);
+        assertThat(tier1Count).isEqualTo(1);
+
+        em.clear();
+        assertThat(accountDekRepository.findById(dekId))
+                .as("Tier-1 backstop: account_dek must be gone before Tier-2 runs")
+                .isEmpty();
+
+        // Tier-2 must now succeed — no FK violation from a surviving account_dek row
+        int tier2Count = erasureService.purgeLegalHoldAccounts(365);
+        assertThat(tier2Count).isEqualTo(1);
+
+        em.clear();
+        assertThat(users.findById(userId))
+                .as("Tier-2 must hard-delete the users row after Tier-1 cleared account_dek")
+                .isEmpty();
     }
 
     // =========================================================================
@@ -341,6 +399,27 @@ class AccountErasureServiceTest {
     // =========================================================================
     // Helpers
     // =========================================================================
+
+    /**
+     * Persists an {@code account_dek} row for the given user (simulates a DEK that survived T0,
+     * triggering the Tier-1 FK-backstop path in {@link AccountErasureService}).
+     *
+     * <p>The PK of {@code account_dek} is {@code user_id}, so the returned UUID is the same
+     * as the input {@code userId} — used for the {@code findById} assertion after the purge.
+     *
+     * <p>ADR IMPORTANT-1 guard: if this row were NOT purged by Tier-1, the subsequent
+     * {@code DELETE FROM users} in Tier-2 would FK-violate (same failure class as the
+     * self_log F1 fix documented at lines 97-98).
+     */
+    private UUID persistAccountDek(UUID userId) {
+        AccountDek dek = new AccountDek();
+        dek.setUserId(userId);
+        dek.setWrappedDek(new byte[]{1, 2, 3, 4});
+        dek.setKmsKeyId("mock-cmk/test");
+        dek.setWrapContext("accountId=" + userId);
+        em.persistAndFlush(dek);
+        return userId; // PK = user_id
+    }
 
     private UUID persistSoftDeletedUser(String email, Instant deletedAt) {
         User u = new User();
