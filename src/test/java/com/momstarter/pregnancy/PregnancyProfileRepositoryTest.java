@@ -17,6 +17,8 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+// RED: tests for entity name cipher fields + H2 shred (added by springboot-backend-dev name-fields slice)
+
 /**
  * Repository-layer tests for {@link PregnancyProfile}.
  *
@@ -121,5 +123,64 @@ class PregnancyProfileRepositoryTest {
         User u = savedUser("mom4@example.com");
         PregnancyProfile p = profiles.save(buildProfile(u.getId(), LocalDate.of(2027, 7, 1), "due_date"));
         assertThat(p.getVersion()).isEqualTo(0L);
+    }
+
+    // -------------------------------------------------------------------------
+    // Name cipher field tests (name-fields slice)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Entity name cipher fields can be set to non-null bytes and read back (round-trip via H2).
+     * RED: will fail until PregnancyProfile gains the 3 bytea fields.
+     */
+    @Test
+    void nameCipherFields_setAndRead_roundTrip() {
+        User u = savedUser("mom5@example.com");
+        PregnancyProfile p = buildProfile(u.getId(), LocalDate.of(2027, 8, 1), "due_date");
+        p.setMotherFirstNameCipher(new byte[]{0x01, 0x02, 0x03});
+        p.setMotherLastNameCipher(new byte[]{0x04, 0x05, 0x06});
+        p.setBabyNameCipher(new byte[]{0x07, 0x08, 0x09});
+        PregnancyProfile saved = profiles.save(p);
+        profiles.flush();
+
+        PregnancyProfile found = profiles.findByUserId(u.getId()).orElseThrow();
+        assertThat(found.getMotherFirstNameCipher())
+                .as("motherFirstNameCipher round-trip")
+                .isEqualTo(new byte[]{0x01, 0x02, 0x03});
+        assertThat(found.getMotherLastNameCipher())
+                .as("motherLastNameCipher round-trip")
+                .isEqualTo(new byte[]{0x04, 0x05, 0x06});
+        assertThat(found.getBabyNameCipher())
+                .as("babyNameCipher round-trip")
+                .isEqualTo(new byte[]{0x07, 0x08, 0x09});
+    }
+
+    /**
+     * shredCiphersByUserId NULLs all three name cipher columns on H2
+     * (belt-and-suspenders for PDPA ม.33; real Postgres tested in PgSmokeTest).
+     * RED: will fail until PregnancyProfile has the 3 fields and shred method works via entity.
+     */
+    @Test
+    void shredCiphersByUserId_H2_nullsAllThreeNameCiphers() {
+        User u = savedUser("mom6@example.com");
+        PregnancyProfile p = buildProfile(u.getId(), LocalDate.of(2027, 9, 1), "due_date");
+        p.setMotherFirstNameCipher(new byte[]{0x41, 0x6E, 0x6E, 0x61});    // "Anna"
+        p.setMotherLastNameCipher(new byte[]{0x53, 0x6D, 0x69, 0x74, 0x68}); // "Smith"
+        p.setBabyNameCipher(new byte[]{0x4C, 0x69, 0x6C, 0x79});             // "Lily"
+        profiles.saveAndFlush(p);
+
+        int shredded = profiles.shredCiphersByUserId(u.getId());
+        assertThat(shredded).as("shred must affect exactly 1 row").isEqualTo(1);
+
+        PregnancyProfile after = profiles.findByUserId(u.getId()).orElseThrow();
+        assertThat(after.getMotherFirstNameCipher())
+                .as("motherFirstNameCipher must be NULL after shred")
+                .isNull();
+        assertThat(after.getMotherLastNameCipher())
+                .as("motherLastNameCipher must be NULL after shred")
+                .isNull();
+        assertThat(after.getBabyNameCipher())
+                .as("babyNameCipher must be NULL after shred")
+                .isNull();
     }
 }

@@ -84,6 +84,32 @@ public class PregnancyProfile {
     private LocalDate birthDate;
 
     /**
+     * Mother's first name — {@code bytea} ciphertext (client-encrypted identity PII,
+     * name-fields-design.md Option A). MVP posture: holds plaintext bytes (no-op cipher).
+     * Real AES-256-GCM lands in the same column at the KMS/EAS milestone (zero schema change).
+     * Nullable — all three name fields are optional (name-fields-design.md Decision 3).
+     * Never queried or parsed server-side; only stored and echoed back as Base64.
+     * Crypto-shredded to NULL by {@link PregnancyProfileRepository#shredCiphersByUserId} at T0.
+     */
+    @Column(name = "mother_first_name_cipher", columnDefinition = "bytea")
+    private byte[] motherFirstNameCipher;
+
+    /**
+     * Mother's last name — same posture as {@link #motherFirstNameCipher}.
+     * Nullable; crypto-shredded to NULL at T0 alongside motherFirstNameCipher.
+     */
+    @Column(name = "mother_last_name_cipher", columnDefinition = "bytea")
+    private byte[] motherLastNameCipher;
+
+    /**
+     * Baby's name — same posture as {@link #motherFirstNameCipher}.
+     * Nullable; capturable anytime (pre- or post-birth, owner decision OQ-N-OWN3).
+     * Crypto-shredded to NULL at T0.
+     */
+    @Column(name = "baby_name_cipher", columnDefinition = "bytea")
+    private byte[] babyNameCipher;
+
+    /**
      * Free-value delivery type (e.g. "vaginal", "cesarean"). Nullable; set at birth event.
      * Stored verbatim, never parsed.
      */
@@ -187,6 +213,30 @@ public class PregnancyProfile {
 
     public void setBirthDate(LocalDate birthDate) {
         this.birthDate = birthDate;
+    }
+
+    public byte[] getMotherFirstNameCipher() {
+        return motherFirstNameCipher;
+    }
+
+    public void setMotherFirstNameCipher(byte[] motherFirstNameCipher) {
+        this.motherFirstNameCipher = motherFirstNameCipher;
+    }
+
+    public byte[] getMotherLastNameCipher() {
+        return motherLastNameCipher;
+    }
+
+    public void setMotherLastNameCipher(byte[] motherLastNameCipher) {
+        this.motherLastNameCipher = motherLastNameCipher;
+    }
+
+    public byte[] getBabyNameCipher() {
+        return babyNameCipher;
+    }
+
+    public void setBabyNameCipher(byte[] babyNameCipher) {
+        this.babyNameCipher = babyNameCipher;
     }
 
     public String getDeliveryType() {
