@@ -822,6 +822,68 @@ class AccountExportMvcTest {
     }
 
     // -------------------------------------------------------------------------
+    // NAME FIELDS — PDPA ม.30 export (name-fields-design.md §6)
+    // RED until PregnancyProfileExportEntry + AccountExportService.toProfileEntry are updated
+    // -------------------------------------------------------------------------
+
+    /**
+     * When a pregnancy profile has name cipher bytes set, the export must include decrypted
+     * name plaintext fields. Under the MVP no-op cipher posture (Option A), the raw bytes
+     * ARE the UTF-8 plaintext; the legacy dispatch path in {@link FieldEnvelopeDecryptor}
+     * decodes Base64-of-UTF-8 → readable string without a DEK.
+     *
+     * <p>name-fields-design.md §6 + AAD RULING 2b:
+     * collection="pregnancyProfile", recordId=accountId (row-per-account table).
+     */
+    @Test
+    void pregnancyProfileExport_includesDecryptedNameFields() throws Exception {
+        PregnancyProfile profile = new PregnancyProfile();
+        profile.setUserId(userA.getId());
+        profile.setEdd(LocalDate.of(2027, 1, 15));
+        profile.setEddBasis("due_date");
+        profile.setMotherFirstNameCipher("Somchai".getBytes(StandardCharsets.UTF_8));
+        profile.setMotherLastNameCipher("Rakdee".getBytes(StandardCharsets.UTF_8));
+        profile.setBabyNameCipher("Nong Fah".getBytes(StandardCharsets.UTF_8));
+        profiles.saveAndFlush(profile);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pregnancyProfile").exists())
+                .andExpect(jsonPath("$.pregnancyProfile.motherFirstName").value("Somchai"))
+                .andExpect(jsonPath("$.pregnancyProfile.motherLastName").value("Rakdee"))
+                .andExpect(jsonPath("$.pregnancyProfile.babyName").value("Nong Fah"));
+    }
+
+    /**
+     * When name cipher columns are NULL (never set or crypto-shredded), the export must
+     * include the pregnancy profile with null / absent name fields (no NPE thrown).
+     */
+    @Test
+    void pregnancyProfileExport_nameFieldsNullWhenCipherNull() throws Exception {
+        PregnancyProfile profile = new PregnancyProfile();
+        profile.setUserId(userA.getId());
+        profile.setEdd(LocalDate.of(2027, 3, 1));
+        profile.setEddBasis("due_date");
+        // All three name ciphers intentionally left null
+        profiles.saveAndFlush(profile);
+
+        String body = mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pregnancyProfile").exists())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        // Raw cipher key names must never appear in the export
+        org.assertj.core.api.Assertions.assertThat(body)
+                .doesNotContain("motherFirstNameCipher")
+                .doesNotContain("motherLastNameCipher")
+                .doesNotContain("babyNameCipher");
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 

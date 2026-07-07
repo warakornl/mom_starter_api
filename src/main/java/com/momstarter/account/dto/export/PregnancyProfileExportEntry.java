@@ -11,7 +11,19 @@ import java.util.UUID;
  * is handled at the RDS/KMS layer; this export reflects the plaintext value that the
  * server holds and the user originally supplied.
  *
- * <p>Excludes {@code version} (internal concurrency token).
+ * <p>Excludes {@code version} (internal concurrency token) and raw {@code *_cipher} bytes
+ * (those are decrypted before export and represented as readable strings here).
+ *
+ * <h2>Name fields — DEK-aware decrypt (name-fields-design.md §6)</h2>
+ * <p>{@code motherFirstName}, {@code motherLastName}, {@code babyName} hold the
+ * <em>decrypted plaintext</em> (not the raw cipher bytes). Under the MVP no-op cipher posture
+ * (Option A), the "plaintext" is the UTF-8 bytes the client sent as the field-envelope body.
+ * When a cipher column is NULL (never set or crypto-shredded at T0), the corresponding
+ * export field is {@code null}.
+ *
+ * <p>AAD RULING 2b: for row-per-account tables (one profile per account), the AAD
+ * {@code recordId} is the {@code accountId} string (not the profile row UUID), because the
+ * identity binding is per-account — the row ID is an implementation detail.
  */
 public record PregnancyProfileExportEntry(
         UUID id,
@@ -21,6 +33,21 @@ public record PregnancyProfileExportEntry(
         LocalDate birthDate,
         String deliveryType,
         String birthNote,
+        /**
+         * Decrypted mother first name, or {@code null} when cipher column is NULL.
+         * AAD: collection="pregnancyProfile", field="motherFirstName", recordId=accountId.
+         */
+        String motherFirstName,
+        /**
+         * Decrypted mother last name, or {@code null} when cipher column is NULL.
+         * AAD: collection="pregnancyProfile", field="motherLastName", recordId=accountId.
+         */
+        String motherLastName,
+        /**
+         * Decrypted baby name, or {@code null} when cipher column is NULL.
+         * AAD: collection="pregnancyProfile", field="babyName", recordId=accountId.
+         */
+        String babyName,
         Instant createdAt,
         Instant updatedAt,
         Instant deletedAt

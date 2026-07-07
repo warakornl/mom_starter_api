@@ -145,6 +145,19 @@ public class AccountExportService {
     /** Frozen field name for {@code kick_count_session.note_cipher}. */
     private static final String FIELD_KICK_NOTE = "note";
 
+    /**
+     * Frozen collection name for {@code pregnancy_profile} cipher fields (RULING 2a — name-stability).
+     * This is a row-per-account table; AAD recordId = accountId (RULING 2b).
+     * NEVER rename: baked into every GCM tag written by the mobile client.
+     */
+    private static final String COLL_PREGNANCY_PROFILE = "pregnancyProfile";
+    /** Frozen field name for {@code pregnancy_profile.mother_first_name_cipher}. */
+    private static final String FIELD_PP_MOTHER_FIRST_NAME = "motherFirstName";
+    /** Frozen field name for {@code pregnancy_profile.mother_last_name_cipher}. */
+    private static final String FIELD_PP_MOTHER_LAST_NAME = "motherLastName";
+    /** Frozen field name for {@code pregnancy_profile.baby_name_cipher}. */
+    private static final String FIELD_PP_BABY_NAME = "babyName";
+
     // -------------------------------------------------------------------------
     // Dependencies
     // -------------------------------------------------------------------------
@@ -248,7 +261,7 @@ public class AccountExportService {
 
         // ---- pregnancy profile ----
         PregnancyProfileExportEntry profileEntry = profiles.findByUserId(userId)
-                .map(this::toProfileEntry)
+                .map(p -> toProfileEntry(p, dek, accountIdStr))
                 .orElse(null);
 
         // ---- supply items ----
@@ -405,10 +418,34 @@ public class AccountExportService {
     // Private helpers
     // -------------------------------------------------------------------------
 
-    private PregnancyProfileExportEntry toProfileEntry(PregnancyProfile p) {
+    /**
+     * Builds a {@link PregnancyProfileExportEntry} with DEK-aware decryption of name fields.
+     *
+     * <p>AAD RULING 2b: {@code pregnancy_profile} is a row-per-account table (one row per
+     * account). The AAD {@code recordId} is the {@code accountId} string — the profile row UUID
+     * is an implementation detail. The mobile client MUST use the same {@code recordId=accountId}
+     * when encrypting. Frozen logical identifiers are in the {@code COLL_PREGNANCY_PROFILE} /
+     * {@code FIELD_PP_*} constants — NEVER changed.
+     *
+     * @param p           the pregnancy profile entity
+     * @param dek         256-bit plaintext DEK (may be null for legacy/pre-provisioned accounts)
+     * @param accountIdStr the account UUID as string (= recordId for AAD)
+     * @return export entry with decrypted name strings (null where cipher is null)
+     */
+    private PregnancyProfileExportEntry toProfileEntry(PregnancyProfile p,
+                                                        byte[] dek, String accountIdStr) {
         return new PregnancyProfileExportEntry(
                 p.getId(), p.getEdd(), p.getEddBasis(), p.getLifecycle(),
                 p.getBirthDate(), p.getDeliveryType(), p.getBirthNote(),
+                dispatchDecrypt(p.getMotherFirstNameCipher(), dek,
+                        new FieldAad(accountIdStr, COLL_PREGNANCY_PROFILE,
+                                accountIdStr, FIELD_PP_MOTHER_FIRST_NAME)),
+                dispatchDecrypt(p.getMotherLastNameCipher(), dek,
+                        new FieldAad(accountIdStr, COLL_PREGNANCY_PROFILE,
+                                accountIdStr, FIELD_PP_MOTHER_LAST_NAME)),
+                dispatchDecrypt(p.getBabyNameCipher(), dek,
+                        new FieldAad(accountIdStr, COLL_PREGNANCY_PROFILE,
+                                accountIdStr, FIELD_PP_BABY_NAME)),
                 p.getCreatedAt(), p.getUpdatedAt(), p.getDeletedAt());
     }
 
