@@ -3,6 +3,7 @@ package com.momstarter.account;
 import com.momstarter.account.dto.AccountInput;
 import com.momstarter.auth.RefreshTokenService;
 import com.momstarter.error.ApiException;
+import com.momstarter.pregnancy.PregnancyProfileRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -40,7 +41,8 @@ class AccountServiceEmailConstraintRaceTest {
         users = mock(UserRepository.class);
         refreshTokens = mock(RefreshTokenService.class);
         AccountDekRepository accountDekRepository = mock(AccountDekRepository.class);
-        service = new AccountService(users, refreshTokens, accountDekRepository);
+        PregnancyProfileRepository pregnancyProfileRepository = mock(PregnancyProfileRepository.class);
+        service = new AccountService(users, refreshTokens, accountDekRepository, pregnancyProfileRepository);
     }
 
     @Test

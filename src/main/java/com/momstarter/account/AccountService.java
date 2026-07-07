@@ -4,6 +4,7 @@ import com.momstarter.account.dto.AccountInput;
 import com.momstarter.account.dto.AccountResponse;
 import com.momstarter.auth.RefreshTokenService;
 import com.momstarter.error.ApiException;
+import com.momstarter.pregnancy.PregnancyProfileRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -51,12 +52,15 @@ public class AccountService {
     private final UserRepository users;
     private final RefreshTokenService refreshTokens;
     private final AccountDekRepository accountDekRepository;
+    private final PregnancyProfileRepository pregnancyProfileRepository;
 
     public AccountService(UserRepository users, RefreshTokenService refreshTokens,
-                          AccountDekRepository accountDekRepository) {
+                          AccountDekRepository accountDekRepository,
+                          PregnancyProfileRepository pregnancyProfileRepository) {
         this.users = users;
         this.refreshTokens = refreshTokens;
         this.accountDekRepository = accountDekRepository;
+        this.pregnancyProfileRepository = pregnancyProfileRepository;
     }
 
     // -------------------------------------------------------------------------
@@ -212,6 +216,15 @@ public class AccountService {
         // entire transaction (including the setStatus("deleted") flush above) — fail-closed.
         // Idempotent: 0 rows deleted if the DEK was already shredded or never provisioned.
         accountDekRepository.deleteByUserId(userId);
+
+        // T0 PER-ROW NAME-CIPHER SHRED (PDPA ม.33 / name-fields-design.md §5c):
+        // Belt-and-suspenders NULL the three name cipher columns on the pregnancy_profile row.
+        // Under the MVP no-op cipher, destroying the DEK is the primary T0 shred. The per-row
+        // NULL shred provides durable evidence that identity-PII name bytes are explicitly
+        // removed from the row before the 180-day hard-purge carries away the tombstone.
+        // Idempotent: no-op when no profile row exists (0 rows affected) or already NULL.
+        // Runs in the SAME transaction: a failure rolls back the whole deleteAccount, fail-closed.
+        pregnancyProfileRepository.shredCiphersByUserId(userId);
 
         // Revoke every refresh-token family: blocks all devices from refreshing.
         // Access tokens are stateless (≤15 min) and expire naturally.
