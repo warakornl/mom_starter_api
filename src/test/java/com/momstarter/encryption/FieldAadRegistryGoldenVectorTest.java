@@ -21,11 +21,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Golden-vector tests for ALL 8 frozen AAD registry tuples defined in
+ * Golden-vector tests for ALL 11 frozen AAD registry tuples defined in
  * {@code docs/security/field-aad-registry.md} (appsec gap G4 — closed by this class).
  *
+ * <p>Tuples 1-8 are row-scoped ({@code recordId} = the row's own id). Tuples 9-11
+ * ({@code pregnancyProfile}) are the FIRST row-per-account entries: {@code recordId}
+ * EQUALS {@code accountId} (RULING 2b), so the same UUID appears in both the accountId
+ * and recordId AAD slots. The vector JSON carries {@code recordId == accountId} for those
+ * three, so the AAD builder below needs no special-casing — it reads recordId from JSON.
+ *
  * <p>Before this class, {@code golden-vectors.json} pinned only the demo
- * {@code expenses/note} tuple. Real-tuple coverage was 0/8. This class closes
+ * {@code expenses/note} tuple. Real-tuple coverage was 0/11. This class closes
  * that gap by:
  * <ol>
  *   <li><b>Golden match</b> — AES-256-GCM with a fixed IV must produce byte-identical
@@ -64,9 +70,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <ul>
  *   <li>Shared test DEK: 32 zero bytes (AES-256, test-only).</li>
  *   <li>Shared accountId: {@code cccccccc-cccc-cccc-cccc-cccccccccccc}.</li>
- *   <li>Shared recordId: {@code dddddddd-dddd-dddd-dddd-dddddddddddd} (client-generated UUID).</li>
- *   <li>Per-vector IVs: {@code 000000000000000000000001} through {@code 000000000000000000000008}
- *       (last byte = 1..8) — demonstrates IV independence; each vector has a distinct nonce.</li>
+ *   <li>Shared recordId (tuples 1-8): {@code dddddddd-dddd-dddd-dddd-dddddddddddd} (client-generated UUID).</li>
+ *   <li>Row-per-account recordId (tuples 9-11, pregnancyProfile): equals the accountId
+ *       {@code cccccccc-cccc-cccc-cccc-cccccccccccc} (RULING 2b) — read straight from the vector JSON.</li>
+ *   <li>Per-vector IVs: {@code 000000000000000000000001} through {@code 00000000000000000000000b}
+ *       (last byte = 1..11) — demonstrates IV independence; each vector has a distinct nonce.</li>
  *   <li>Plaintexts: realistic values including Thai UTF-8 multibyte strings to prove
  *       UTF-8 encoding correctness end-to-end.</li>
  * </ul>
@@ -80,7 +88,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @see FieldEnvelopeTest#GoldenVectors for the original demo golden vector
  * @see AccountExportService for the frozen AAD constant definitions
  */
-@DisplayName("Registry golden vectors — all 8 frozen AAD tuples (gap G4)")
+@DisplayName("Registry golden vectors — all 11 frozen AAD tuples (gap G4)")
 class FieldAadRegistryGoldenVectorTest {
 
     // -----------------------------------------------------------------------
@@ -102,13 +110,15 @@ class FieldAadRegistryGoldenVectorTest {
      *   <li>{@code "medicationPlan"}   → {@code AccountExportService.COLL_MEDICATION_PLAN}</li>
      *   <li>{@code "medicationLog"}    → {@code AccountExportService.COLL_MEDICATION_LOG}</li>
      *   <li>{@code "kickCountSession"} → {@code AccountExportService.COLL_KICK_COUNT_SESSION}</li>
+     *   <li>{@code "pregnancyProfile"} → {@code AccountExportService.COLL_PREGNANCY_PROFILE} (row-per-account)</li>
      * </ul>
      */
     private static final Map<String, String> COLL_CONST_NAMES = Map.of(
             "selfLog",          "COLL_SELF_LOG",
             "medicationPlan",   "COLL_MEDICATION_PLAN",
             "medicationLog",    "COLL_MEDICATION_LOG",
-            "kickCountSession", "COLL_KICK_COUNT_SESSION"
+            "kickCountSession", "COLL_KICK_COUNT_SESSION",
+            "pregnancyProfile", "COLL_PREGNANCY_PROFILE"
     );
 
     /**
@@ -124,17 +134,23 @@ class FieldAadRegistryGoldenVectorTest {
      *   <li>{@code "medicationPlan:dose"}           → {@code AccountExportService.FIELD_MED_PLAN_DOSE}</li>
      *   <li>{@code "medicationLog:note"}            → {@code AccountExportService.FIELD_MED_LOG_NOTE}</li>
      *   <li>{@code "kickCountSession:note"}         → {@code AccountExportService.FIELD_KICK_NOTE}</li>
+     *   <li>{@code "pregnancyProfile:motherFirstName"} → {@code AccountExportService.FIELD_PP_MOTHER_FIRST_NAME}</li>
+     *   <li>{@code "pregnancyProfile:motherLastName"}  → {@code AccountExportService.FIELD_PP_MOTHER_LAST_NAME}</li>
+     *   <li>{@code "pregnancyProfile:babyName"}         → {@code AccountExportService.FIELD_PP_BABY_NAME}</li>
      * </ul>
      */
-    private static final Map<String, String> FIELD_CONST_NAMES = Map.of(
-            "selfLog:valueNumeric",          "FIELD_SELF_LOG_VALUE_NUMERIC",
-            "selfLog:valueNumericSecondary", "FIELD_SELF_LOG_VALUE_NUMERIC_SECONDARY",
-            "selfLog:valueText",             "FIELD_SELF_LOG_VALUE_TEXT",
-            "selfLog:note",                  "FIELD_SELF_LOG_NOTE",
-            "medicationPlan:name",           "FIELD_MED_PLAN_NAME",
-            "medicationPlan:dose",           "FIELD_MED_PLAN_DOSE",
-            "medicationLog:note",            "FIELD_MED_LOG_NOTE",
-            "kickCountSession:note",         "FIELD_KICK_NOTE"
+    private static final Map<String, String> FIELD_CONST_NAMES = Map.ofEntries(
+            Map.entry("selfLog:valueNumeric",          "FIELD_SELF_LOG_VALUE_NUMERIC"),
+            Map.entry("selfLog:valueNumericSecondary", "FIELD_SELF_LOG_VALUE_NUMERIC_SECONDARY"),
+            Map.entry("selfLog:valueText",             "FIELD_SELF_LOG_VALUE_TEXT"),
+            Map.entry("selfLog:note",                  "FIELD_SELF_LOG_NOTE"),
+            Map.entry("medicationPlan:name",           "FIELD_MED_PLAN_NAME"),
+            Map.entry("medicationPlan:dose",           "FIELD_MED_PLAN_DOSE"),
+            Map.entry("medicationLog:note",            "FIELD_MED_LOG_NOTE"),
+            Map.entry("kickCountSession:note",         "FIELD_KICK_NOTE"),
+            Map.entry("pregnancyProfile:motherFirstName", "FIELD_PP_MOTHER_FIRST_NAME"),
+            Map.entry("pregnancyProfile:motherLastName",  "FIELD_PP_MOTHER_LAST_NAME"),
+            Map.entry("pregnancyProfile:babyName",        "FIELD_PP_BABY_NAME")
     );
 
     // -----------------------------------------------------------------------
@@ -211,8 +227,8 @@ class FieldAadRegistryGoldenVectorTest {
                 ));
             }
             assertThat(vectors)
-                    .as("registry_vectors.vectors must contain exactly 8 entries (one per registered AAD tuple)")
-                    .hasSize(8);
+                    .as("registry_vectors.vectors must contain exactly 11 entries (one per registered AAD tuple)")
+                    .hasSize(11);
             return vectors.stream();
         } catch (Exception e) {
             throw new RuntimeException("Failed to load registry vectors from golden-vectors.json", e);
@@ -360,6 +376,9 @@ class FieldAadRegistryGoldenVectorTest {
      *   <li>medicationPlan / dose           → COLL_MEDICATION_PLAN + FIELD_MED_PLAN_DOSE</li>
      *   <li>medicationLog / note            → COLL_MEDICATION_LOG + FIELD_MED_LOG_NOTE</li>
      *   <li>kickCountSession / note         → COLL_KICK_COUNT_SESSION + FIELD_KICK_NOTE</li>
+     *   <li>pregnancyProfile / motherFirstName → COLL_PREGNANCY_PROFILE + FIELD_PP_MOTHER_FIRST_NAME (row-per-account)</li>
+     *   <li>pregnancyProfile / motherLastName  → COLL_PREGNANCY_PROFILE + FIELD_PP_MOTHER_LAST_NAME (row-per-account)</li>
+     *   <li>pregnancyProfile / babyName        → COLL_PREGNANCY_PROFILE + FIELD_PP_BABY_NAME (row-per-account)</li>
      * </ul>
      */
     @ParameterizedTest(name = "{0}")
