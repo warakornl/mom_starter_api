@@ -545,4 +545,185 @@ class PregnancyProfileMvcTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("not_found"));
     }
+
+    // =========================================================================
+    // Name cipher fields — DTO round-trip (name-fields slice)
+    // RED: fail until PregnancyProfileInput + PregnancyProfileResponse carry name fields
+    // =========================================================================
+
+    /** A valid Base64 payload representing 10 bytes (simulates a ciphertext). */
+    private static final String FAKE_B64_FIRST = java.util.Base64.getEncoder().encodeToString(
+            new byte[]{1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+    private static final String FAKE_B64_LAST = java.util.Base64.getEncoder().encodeToString(
+            new byte[]{11, 12, 13, 14, 15, 16, 17, 18, 19, 20});
+    private static final String FAKE_B64_BABY = java.util.Base64.getEncoder().encodeToString(
+            new byte[]{21, 22, 23, 24, 25, 26, 27, 28, 29, 30});
+
+    /**
+     * PUT with name fields round-trips — after setting names the GET response carries them back.
+     * RED: fails until DTO and service carry name fields.
+     */
+    @Test
+    void put_nameFields_roundTrip_getReturnsBase64Ciphertext() throws Exception {
+        // Create profile with EDD only
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isCreated());
+
+        // Update with name fields (same edd + name keys = real mutation, version bumps)
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\","
+                                + "\"motherFirstName\":\"" + FAKE_B64_FIRST + "\","
+                                + "\"motherLastName\":\"" + FAKE_B64_LAST + "\","
+                                + "\"babyName\":\"" + FAKE_B64_BABY + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.motherFirstName").value(FAKE_B64_FIRST))
+                .andExpect(jsonPath("$.motherLastName").value(FAKE_B64_LAST))
+                .andExpect(jsonPath("$.babyName").value(FAKE_B64_BABY));
+
+        // GET must also echo the names
+        mvc.perform(get("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.motherFirstName").value(FAKE_B64_FIRST))
+                .andExpect(jsonPath("$.motherLastName").value(FAKE_B64_LAST))
+                .andExpect(jsonPath("$.babyName").value(FAKE_B64_BABY));
+    }
+
+    // =========================================================================
+    // No-op boundary — OQ-9 scoped exception (name-fields slice)
+    // RED: fail until service enforces the no-op boundary correctly
+    // =========================================================================
+
+    /**
+     * (OQ-9 scoped exception) — PUT with name key(s) present + same edd → REAL mutation:
+     * must persist + bump version even though edd is unchanged.
+     */
+    @Test
+    void put_namesOnlyEdit_sameEdd_persistsAndBumpsVersion() throws Exception {
+        // Create
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isCreated());
+
+        // PUT same edd BUT carries a name field → version 0→1 (REAL mutation, not a no-op)
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\","
+                                + "\"motherFirstName\":\"" + FAKE_B64_FIRST + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(1L));   // bumped — not a no-op
+    }
+
+    /**
+     * (OQ-9 baseline) — PUT with NO name key + same edd → true no-op:
+     * version must NOT be bumped (original OQ-9 behaviour preserved).
+     */
+    @Test
+    void put_eddOnlyNoNameKeys_sameEdd_noOp_versionUnchanged() throws Exception {
+        // Create
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isCreated());
+
+        // PUT same edd, no name keys → no-op, version stays 0
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(0L));   // NOT bumped — true no-op
+    }
+
+    /**
+     * Explicit JSON null for a name field → clear the column to NULL + bump version.
+     * Null-vs-absent contract: present null = clear; absent = leave unchanged.
+     */
+    @Test
+    void put_explicitNullName_clearsColumnAndBumpsVersion() throws Exception {
+        // Create profile
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isCreated());
+
+        // Set a name value first (version 0→1)
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\","
+                                + "\"motherFirstName\":\"" + FAKE_B64_FIRST + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(1L));
+
+        // Now explicitly null it — version 1→2 and field absent from response (NON_NULL)
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"1\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\",\"motherFirstName\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(2L))         // bumped again
+                .andExpect(jsonPath("$.motherFirstName").doesNotExist()); // cleared (NON_NULL)
+    }
+
+    // =========================================================================
+    // Byte-cap validation — name_too_large (name-fields slice)
+    // RED: fails until service enforces the byte cap
+    // =========================================================================
+
+    /**
+     * Ciphertext exceeding the byte cap (8 KB decoded) → 422 validation_error
+     * with details = name_too_large.
+     */
+    @Test
+    void put_nameCipherExceedsByteCap_returns422_nameTooLarge() throws Exception {
+        // Create profile first
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\"}"))
+                .andExpect(status().isCreated());
+
+        // Build a Base64 payload that decodes to 8193 bytes (> 8192 cap)
+        byte[] oversized = new byte[8193];
+        java.util.Arrays.fill(oversized, (byte) 0x41);
+        String oversizedB64 = java.util.Base64.getEncoder().encodeToString(oversized);
+
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-15\","
+                                + "\"motherFirstName\":\"" + oversizedB64 + "\"}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("validation_error"))
+                .andExpect(jsonPath("$.details").value("name_too_large"));
+    }
 }

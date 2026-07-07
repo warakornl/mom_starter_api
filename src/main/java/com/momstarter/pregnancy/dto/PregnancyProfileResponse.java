@@ -8,6 +8,7 @@ import com.momstarter.pregnancy.PregnancyProfile;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.Base64;
 import java.util.UUID;
 
 /**
@@ -32,6 +33,12 @@ import java.util.UUID;
  *
  * <p>{@code deletedAt} is excluded from the JSON output when null ({@code NON_NULL}),
  * consistent with the &lt;sync&gt; "nullable tombstone" pattern.
+ *
+ * <h2>Name cipher fields</h2>
+ * <p>{@code motherFirstName}, {@code motherLastName}, {@code babyName} are the Base64-encoded
+ * wire representations of the {@code *_cipher bytea} columns (client-encrypted; the client
+ * decrypts them using its DEK — Option A, name-fields-design.md Decision 2). They are
+ * {@code null} when the column is NULL and excluded from JSON by {@code @JsonInclude(NON_NULL)}.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record PregnancyProfileResponse(
@@ -55,6 +62,24 @@ public record PregnancyProfileResponse(
          */
         @JsonFormat(pattern = "yyyy-MM-dd")
         LocalDate birthDate,
+
+        // ---- Name cipher fields (client-encrypted Base64, optional/nullable) ----
+
+        /**
+         * Mother's first name — Base64 ciphertext (client-encrypted, Option A).
+         * {@code null} when column is NULL; excluded from JSON by {@code NON_NULL}.
+         */
+        String motherFirstName,
+
+        /**
+         * Mother's last name — same as {@link #motherFirstName}.
+         */
+        String motherLastName,
+
+        /**
+         * Baby's name — same as {@link #motherFirstName}. Capturable anytime (pre/post birth).
+         */
+        String babyName,
 
         // ---- Derived gestational-age snapshot (null when postpartum) ----
 
@@ -137,6 +162,9 @@ public record PregnancyProfileResponse(
                 p.getEddBasis(),
                 p.getLifecycle(),
                 p.getBirthDate(),             // null while pregnant
+                toBase64(p.getMotherFirstNameCipher()),
+                toBase64(p.getMotherLastNameCipher()),
+                toBase64(p.getBabyNameCipher()),
                 ga.gestationalWeek(),         // int auto-boxed to Integer
                 ga.gestationalDay(),          // int auto-boxed to Integer
                 ga.daysRemaining(),           // long auto-boxed to Long
@@ -174,6 +202,9 @@ public record PregnancyProfileResponse(
                 p.getEddBasis(),
                 p.getLifecycle(),
                 p.getBirthDate(),             // non-null when postpartum
+                toBase64(p.getMotherFirstNameCipher()),
+                toBase64(p.getMotherLastNameCipher()),
+                toBase64(p.getBabyNameCipher()),
                 null,                        // gestationalWeek — absent for postpartum
                 null,                        // gestationalDay  — absent for postpartum
                 null,                        // daysRemaining   — absent for postpartum
@@ -184,5 +215,18 @@ public record PregnancyProfileResponse(
                 pa.postpartumWeek(),         // int auto-boxed to Integer
                 pa.postpartumDay()           // int auto-boxed to Integer
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Encodes raw {@code bytea} bytes to Base64 for the wire response, or returns
+     * {@code null} when the column is NULL (cipher not set / crypto-shredded).
+     * {@code @JsonInclude(NON_NULL)} on the record then omits the field from JSON.
+     */
+    private static String toBase64(byte[] cipherBytes) {
+        return cipherBytes == null ? null : Base64.getEncoder().encodeToString(cipherBytes);
     }
 }
