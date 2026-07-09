@@ -96,4 +96,22 @@ class AuthResetPasswordMvcTest {
                 .andExpect(status().isGone())
                 .andExpect(jsonPath("$.code").value("reset_token_invalid"));
     }
+
+    /**
+     * T-12 — 422 does NOT burn the token (SEC-INV-6 / BE-CORE-7).
+     * Password validation runs BEFORE token consumption in PasswordRecoveryService.resetPassword().
+     * Submitting a too-short password returns 422 without consuming the token;
+     * a subsequent request with the same valid token and a good password must succeed (204).
+     */
+    @Test
+    void weakPassword_returns422_thenSameToken_withValidPassword_returns204() throws Exception {
+        // First request: too-short password → 422 (before token consume, SEC-INV-6)
+        mvc.perform(post("/auth/reset-password").contentType(APPLICATION_JSON).content(body(resetToken, "short")))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("password_too_short"));
+
+        // Same token, now with a valid password → 204 (token was NOT burned by 422)
+        mvc.perform(post("/auth/reset-password").contentType(APPLICATION_JSON).content(body(resetToken, "validpassword1")))
+                .andExpect(status().isNoContent());
+    }
 }
