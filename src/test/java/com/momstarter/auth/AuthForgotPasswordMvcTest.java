@@ -2,11 +2,13 @@ package com.momstarter.auth;
 
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
+import com.momstarter.config.TestSyncAsyncConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.context.annotation.Import;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
@@ -26,6 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @TestPropertySource(properties = "spring.flyway.enabled=true")
+@Import(TestSyncAsyncConfig.class)
 @Transactional
 class AuthForgotPasswordMvcTest {
 
@@ -48,6 +51,7 @@ class AuthForgotPasswordMvcTest {
     @Test
     void unknownEmail_returns202_andSendsNothing() throws Exception {
         forgot("ghost@example.com");
+        // SyncTaskExecutor makes @Async run in the calling thread: verify immediately
         verify(sender, never()).sendPasswordReset(anyString(), anyString());
     }
 
@@ -60,6 +64,7 @@ class AuthForgotPasswordMvcTest {
 
         forgot("mom@example.com");
 
+        // SyncTaskExecutor: dispatch runs synchronously so verify is immediate
         verify(sender).sendPasswordReset(eq("mom@example.com"), anyString());
     }
 

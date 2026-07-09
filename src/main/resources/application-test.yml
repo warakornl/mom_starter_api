@@ -20,5 +20,6 @@ momstarter:
     register-per-ip-per-min: 1000000
     resend-per-ip-per-min: 1000000
     forgot-per-ip-per-min: 1000000
+    forgot-per-account-per-min: 1000000
     reset-per-ip-per-min: 1000000
     verify-email-per-ip-per-min: 1000000

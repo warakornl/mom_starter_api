@@ -50,6 +50,9 @@ momstarter:
     register-per-ip-per-min: 15
     resend-per-ip-per-min: 10
     forgot-per-ip-per-min: 10
+    # BE-CORE-9: per-account (email) bucket to bound reset-email flooding of one victim address.
+    # Both forgot-per-ip and forgot-per-account must be satisfied; exceeding either → 429.
+    forgot-per-account-per-min: 5
     reset-per-ip-per-min: 10
     # Contract §H: verify-email rate-limited per IP to guard against token guessing
     # (128-bit token is already strong; rate-limit adds defence-in-depth at parity with reset)
