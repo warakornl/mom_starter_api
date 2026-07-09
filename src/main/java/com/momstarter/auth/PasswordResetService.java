@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.UUID;
 
@@ -42,16 +43,28 @@ public class PasswordResetService {
         return raw;
     }
 
-    /** Consume a token, returning the owning userId; bad/expired/used -> 410 reset_token_invalid. */
+    /**
+     * Atomically consume a token using a CAS UPDATE (BE-CORE-6). Returns the owning userId on
+     * success. Throws {@code 410 reset_token_invalid} uniformly for missing / expired / already-
+     * consumed tokens — no oracle. The single UPDATE statement eliminates the TOCTOU window
+     * present in a two-step read-then-write pattern: when two concurrent requests submit the same
+     * token, exactly one UPDATE affects 1 row (wins → 204); the other affects 0 rows (loses → 410).
+     */
     public UUID consume(String rawToken) {
-        PasswordResetToken token = tokens.findByTokenHash(RefreshTokenService.sha256Hex(rawToken))
-                .orElseThrow(() -> new ApiException(410, "reset_token_invalid"));
-        if (token.getConsumedAt() != null || token.getExpiresAt().isBefore(clock.instant())) {
+        String hash = RefreshTokenService.sha256Hex(rawToken);
+        Instant now = clock.instant();
+
+        // Atomic CAS: SET consumed_at=now WHERE consumed_at IS NULL AND expires_at > now
+        // Returns 1 (won), 0 (already consumed / expired / not found) — no TOCTOU window.
+        int rows = tokens.atomicConsume(hash, now);
+        if (rows == 0) {
             throw new ApiException(410, "reset_token_invalid");
         }
-        token.setConsumedAt(clock.instant());
-        tokens.save(token);
-        return token.getUserId();
+
+        // CAS succeeded — clearAutomatically=true on the @Modifying ensures fresh read here.
+        return tokens.findByTokenHash(hash)
+                .map(PasswordResetToken::getUserId)
+                .orElseThrow(() -> new ApiException(410, "reset_token_invalid"));
     }
 
     private static String generateRawToken() {
