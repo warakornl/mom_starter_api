@@ -2,6 +2,7 @@ package com.momstarter.dev;
 
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
+import com.momstarter.auth.PasswordEmailSender;
 import com.momstarter.config.TestSyncAsyncConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +16,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -43,6 +45,27 @@ class LocalDevPasswordEmailSenderContextTest {
     private UserRepository users;
     @Autowired
     private PasswordEncoder encoder;
+    /**
+     * Reviewer nit — assert the @Primary bean actually resolves to LocalDevPasswordEmailSender
+     * when expose-reset-token=true with local profile. Verifies the @ConditionalOnProperty
+     * + @Primary override wiring is correct end-to-end in a full Spring context.
+     */
+    @Autowired
+    private PasswordEmailSender passwordEmailSender;
+
+    /**
+     * Reviewer nit: verify @Primary override — the injected PasswordEmailSender MUST be
+     * LocalDevPasswordEmailSender when expose-reset-token=true + local profile, not the
+     * default LoggingPasswordEmailSender stub. This proves the @ConditionalOnProperty +
+     * @Primary wiring resolves correctly in a real Spring application context (BE-DEV-4).
+     */
+    @Test
+    void primaryBeanIsLocalDevPasswordEmailSender_whenFlagOn() {
+        assertThat(passwordEmailSender)
+                .as("When expose-reset-token=true and profile=local, the @Primary bean must "
+                        + "be LocalDevPasswordEmailSender, not LoggingPasswordEmailSender")
+                .isInstanceOf(LocalDevPasswordEmailSender.class);
+    }
 
     @Test
     void contextStarts_devSenderActive_andForgotReturns202() throws Exception {
