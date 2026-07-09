@@ -15,9 +15,6 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -54,12 +51,6 @@ class ForgotPasswordPerAccountRateLimitTest {
         return mvc.perform(post("/auth/forgot-password").contentType(APPLICATION_JSON)
                         .content("{\"email\":\"" + email + "\"}"))
                 .andReturn().getResponse().getContentAsString();
-    }
-
-    private int forgotEmailStatus(String email) throws Exception {
-        return mvc.perform(post("/auth/forgot-password").contentType(APPLICATION_JSON)
-                        .content("{\"email\":\"" + email + "\"}"))
-                .andReturn().getResponse().getStatus();
     }
 
     @Test
@@ -112,13 +103,4 @@ class ForgotPasswordPerAccountRateLimitTest {
                 .andExpect(status().isAccepted());
     }
 
-    @Test
-    void perIpBucket_exhausted_returns429() throws Exception {
-        // Reset per-IP to 2, per-account very high
-        // This test is done through direct service-level unit test in ForgotPasswordIpRateLimitTest
-        // Here just verify 202 still returns when per-account is under limit
-        mvc.perform(post("/auth/forgot-password").contentType(APPLICATION_JSON)
-                        .content("{\"email\":\"ghost@example.com\"}"))
-                .andExpect(status().isAccepted());
-    }
 }
