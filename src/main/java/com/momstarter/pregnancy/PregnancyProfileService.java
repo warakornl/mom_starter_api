@@ -41,6 +41,16 @@ public class PregnancyProfileService {
      */
     static final int MAX_NAME_CIPHER_BYTES = 8192;
 
+    /**
+     * Ciphertext byte cap for hospital-stay date cipher fields (Base64-decoded size).
+     * Mirrors {@link #MAX_NAME_CIPHER_BYTES} — same generous bound for the same reason.
+     * Civil date strings are short (10 bytes plain + ~29 bytes GCM envelope = ~39 bytes),
+     * so 8192 bytes allows for any future extended encryption wrapper while guarding against
+     * clearly oversized payloads.
+     * Sub-error code on violation: {@code hospital_date_too_large}.
+     */
+    static final int MAX_HOSPITAL_DATE_CIPHER_BYTES = 8192;
+
     private final PregnancyProfileRepository repository;
     private final ConsentChecker consentChecker;
 
@@ -299,7 +309,7 @@ public class PregnancyProfileService {
         }
 
         // 5 — Validate birthDate (required field)
-        LocalDate birthDate = (input != null) ? input.birthDate() : null;
+        LocalDate birthDate = (input != null) ? input.getBirthDate() : null;
         if (birthDate == null) {
             throw new ApiException(422, "validation_error");
         }
@@ -312,17 +322,36 @@ public class PregnancyProfileService {
             throw new ApiException(422, "validation_error");
         }
 
+        // 5c — Hospital-date byte-cap validation (fail-fast, before any DB mutation).
+        // Ciphers are random-IV bytea — the server never parses or validates the date content.
+        // Temporal validation (discharge >= admission, <= today) is CLIENT-SIDE ONLY.
+        // The byte-cap guards against oversized payloads (sub-code: hospital_date_too_large).
+        if (input != null) {
+            validateHospitalDateCipherSize(input.getHospitalAdmissionDate());
+            validateHospitalDateCipherSize(input.getHospitalDischargeDate());
+        }
+
+        // Detect whether ANY hospital-stay key is present in the request.
+        // Presence-of-key (value OR explicit null) suppresses the no-op short-circuit
+        // (contract L227 — load-bearing pin). NEVER byte-diff the cipher bytes (random-IV
+        // means the same plaintext produces different bytes on every encrypt call).
+        boolean anyHospitalKeyPresent = input != null
+                && (input.getHospitalAdmissionDate() != null
+                    || input.getHospitalDischargeDate() != null);
+
         // 6 — Already postpartum: content-level idempotency (OQ-12/PP6)
         if ("postpartum".equals(profile.getLifecycle())) {
-            if (birthDate.equals(profile.getBirthDate())) {
-                // Exact same birthDate → true no-op: return current record, version NOT bumped.
-                // No-op equality compares birthDate ONLY — never deliveryType/birthNote (those
-                // are client-encrypted with a random IV in the production path, so byte-equality
-                // would false-negative; see OQ-12 note in api-contract).
+            if (birthDate.equals(profile.getBirthDate()) && !anyHospitalKeyPresent) {
+                // Exact same birthDate AND no hospital-stay key present → true no-op:
+                // return current record, version NOT bumped.
+                // No-op equality compares birthDate ONLY — never deliveryType/birthNote nor
+                // cipher fields (those are client-encrypted with a random IV in the production
+                // path, so byte-equality would false-negative; see OQ-12 note in api-contract).
                 PostpartumAge pa = PostpartumAge.compute(profile.getBirthDate(), clientDate);
                 return PregnancyProfileResponse.of(profile, pa);
             }
-            // Different birthDate: typo correction (OQ-13/PP1) — update and bump version
+            // Different birthDate OR any hospital-stay key present:
+            // both are real mutations → update and bump version.
             profile.setBirthDate(birthDate);
             applyOptionalFields(profile, input);
             PregnancyProfile saved = repository.saveAndFlush(profile);
@@ -357,22 +386,70 @@ public class PregnancyProfileService {
     }
 
     /**
-     * Applies optional {@code deliveryType} and {@code birthNote} fields when present.
+     * Applies optional birth-event fields to the profile entity.
      *
-     * <p>Only writes the field when the request carries a non-null value. A same-birthDate
-     * no-op re-send does not reach this method (returns early before), so this is only called
-     * on the initial transition and on birthDate-changing corrections.
+     * <p>Called on both the initial {@code pregnant → postpartum} transition and on
+     * correction (different birthDate) or hospital-key-present re-POSTs.
      *
-     * <p>TODO security-compliance: replace with encrypted-bytea write when field-level
-     * encryption ships (see {@link com.momstarter.pregnancy.dto.BirthEventInput} TODO block).
+     * <p>{@code deliveryType} and {@code birthNote}: only written when the request carries a
+     * non-null value (simple nullable semantics — no "clear" operation for these two fields).
+     *
+     * <p>{@code hospitalAdmissionDate} / {@code hospitalDischargeDate}: three-way
+     * absent/explicit-null/value semantics (contract L227):
+     * <ul>
+     *   <li>Absent (Java {@code null}) → leave column unchanged.</li>
+     *   <li>{@code Optional.empty()} → set column to {@code null} (clear).</li>
+     *   <li>{@code Optional.of(base64)} → Base64-decode and store as {@code bytea}.</li>
+     * </ul>
+     * Byte-cap validation for hospital fields has already been performed before this method
+     * is called (fail-fast guard in {@link #recordBirthEvent}).
+     *
+     * <p>TODO security-compliance: replace deliveryType/birthNote with encrypted-bytea
+     * when field-level encryption ships
+     * (see {@link com.momstarter.pregnancy.dto.BirthEventInput} TODO block).
      */
     private static void applyOptionalFields(PregnancyProfile profile, BirthEventInput input) {
         if (input == null) return;
-        if (input.deliveryType() != null) {
-            profile.setDeliveryType(input.deliveryType());
+        if (input.getDeliveryType() != null) {
+            profile.setDeliveryType(input.getDeliveryType());
         }
-        if (input.birthNote() != null) {
-            profile.setBirthNote(input.birthNote());
+        if (input.getBirthNote() != null) {
+            profile.setBirthNote(input.getBirthNote());
+        }
+        // Hospital-stay cipher fields: three-way absent/null/value semantics
+        applyNameCipher(profile::setHospitalAdmissionDateCipher, input.getHospitalAdmissionDate());
+        applyNameCipher(profile::setHospitalDischargeDateCipher, input.getHospitalDischargeDate());
+    }
+
+    /**
+     * Validates that a hospital-date cipher field, when present and non-null, decodes to at most
+     * {@value #MAX_HOSPITAL_DATE_CIPHER_BYTES} bytes.
+     * Throws 422 {@code validation_error} with details {@code hospital_date_too_large} when exceeded.
+     *
+     * <p>The server never parses or temporally validates the date bytes — temporal logic is
+     * client-side only (pregnancy-summary-design.md §1.3). This guard is purely a payload
+     * size bound (mirrors {@link #validateNameCipherSize}).
+     *
+     * <p>Absent fields (Java {@code null}) and explicit nulls ({@code Optional.empty()}) are
+     * skipped — there are no bytes to validate.
+     *
+     * @param dateField the hospital-date Optional from the DTO
+     * @throws com.momstarter.error.ApiException 422 validation_error (details: hospital_date_too_large)
+     *         if the decoded ciphertext exceeds {@value #MAX_HOSPITAL_DATE_CIPHER_BYTES} bytes,
+     *         or 422 validation_error (no details) if not valid Base64
+     */
+    private static void validateHospitalDateCipherSize(Optional<String> dateField) {
+        if (dateField == null || !dateField.isPresent()) {
+            return; // absent or explicit null — no bytes to validate
+        }
+        byte[] decoded;
+        try {
+            decoded = Base64.getDecoder().decode(dateField.get());
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(422, "validation_error");
+        }
+        if (decoded.length > MAX_HOSPITAL_DATE_CIPHER_BYTES) {
+            throw new ApiException(422, "validation_error", "hospital_date_too_large");
         }
     }
 
