@@ -157,6 +157,19 @@ public class AccountExportService {
     private static final String FIELD_PP_MOTHER_LAST_NAME = "motherLastName";
     /** Frozen field name for {@code pregnancy_profile.baby_name_cipher}. */
     private static final String FIELD_PP_BABY_NAME = "babyName";
+    /**
+     * Frozen field name for {@code pregnancy_profile.hospital_admission_date_cipher}
+     * (hospital-stay slice — V20260710000019 / pregnancy-summary-design.md §1.6).
+     * NEVER rename: baked into every GCM tag written by the mobile client.
+     * AAD RULING 2b: recordId = accountId (row-per-account table).
+     */
+    private static final String FIELD_PP_HOSPITAL_ADMISSION = "hospitalAdmissionDate";
+    /**
+     * Frozen field name for {@code pregnancy_profile.hospital_discharge_date_cipher}
+     * (hospital-stay slice — V20260710000019 / pregnancy-summary-design.md §1.6).
+     * NEVER rename: baked into every GCM tag written by the mobile client.
+     */
+    private static final String FIELD_PP_HOSPITAL_DISCHARGE = "hospitalDischargeDate";
 
     // -------------------------------------------------------------------------
     // Dependencies
@@ -446,6 +459,15 @@ public class AccountExportService {
                 dispatchDecrypt(p.getBabyNameCipher(), dek,
                         new FieldAad(accountIdStr, COLL_PREGNANCY_PROFILE,
                                 accountIdStr, FIELD_PP_BABY_NAME)),
+                // Hospital-stay date cipher fields (V20260710000019 / pregnancy-summary-design.md §1.5).
+                // AAD RULING 2b: recordId = accountId (row-per-account table).
+                // Null cipher (never set or crypto-shredded at T0) → null String in export.
+                dispatchDecrypt(p.getHospitalAdmissionDateCipher(), dek,
+                        new FieldAad(accountIdStr, COLL_PREGNANCY_PROFILE,
+                                accountIdStr, FIELD_PP_HOSPITAL_ADMISSION)),
+                dispatchDecrypt(p.getHospitalDischargeDateCipher(), dek,
+                        new FieldAad(accountIdStr, COLL_PREGNANCY_PROFILE,
+                                accountIdStr, FIELD_PP_HOSPITAL_DISCHARGE)),
                 p.getCreatedAt(), p.getUpdatedAt(), p.getDeletedAt());
     }
 
