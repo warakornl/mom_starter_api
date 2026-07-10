@@ -1,0 +1,80 @@
+-- mvp1 — supply_items ASD extension: adds uses_per_container (SYNCED config) for the
+-- auto-stock-decrement container-holds-N sub-unit model.
+-- ASD carry-forward (data-model §3.14 / §5 item 2 / auto-stock-decrement-architecture §3 / §9 item 2).
+--
+-- ── WHAT IS ADDED ───────────────────────────────────────────────────────────────────────────────
+--
+-- uses_per_container int NULL CHECK (uses_per_container >= 1)
+--   The number of uses one sealed container yields (e.g. 26 scoops per formula tin, N pieces
+--   per diaper pack, N pumps per soap bottle).
+--   NULL = discrete / manual item — whole-unit path unchanged (regression: unlinked items and
+--   manually managed items are completely unaffected by this column).
+--   SYNCED: pushed to the server and pulled to every device on change, same LWW as the other
+--   supply_item fields.  It is STATIC CONFIG with no per-feed cadence — a single change every
+--   few tins/packs.  Compliance ruling 3 allows it in the supplies collection.
+--   CHECK >= 1: a value of 0 would produce a non-terminating roll-over loop in the decrement
+--   algorithm (auto-stock-decrement-architecture §3.1 / product 3c).
+--
+-- ── WHAT IS DELIBERATELY NOT ADDED (INV-ASD-8 / INV-ASD-4 / INV-ASD-9) ─────────────────────
+--
+-- uses_remaining_in_open_container   → MOBILE-LOCAL-ONLY.  Enforced by ABSENCE from this
+--                                       server schema.  The server cannot store, serve, or infer
+--                                       it; PDF/export are clean by design.  Per-scoop draws that
+--                                       change only this local column NEVER reach the server and
+--                                       CANNOT bump updated_at / version (INV-ASD-8).
+--
+-- feeding_session_id / fed_at /       → Any column tying a supply_item row to a feeding event
+-- per-feed amount / activity linkage    is FORBIDDEN (INV-ASD-4 / INV-ASD-9).  The server-side
+--                                       supply_item row carries ZERO activity linkage.  The health
+--                                       → supply direction (supply_item_id on consumption_mapping)
+--                                       is the allowed direction; the reverse (supply → health)
+--                                       does not exist and must never exist here.
+--
+-- ── on_hand_qty >= 0 (already present) ─────────────────────────────────────────────────────────
+--   The CHECK (on_hand_qty >= 0) and DEFAULT 0 clamp are inherited from V20260629000006.
+--   The ASD container-holds-N model reuses on_hand_qty as container_count (data-model §3.14).
+--   The server clamps on_hand_qty at 0 on sync/push apply (silent, not a validation_error),
+--   consistent with V20260629000006 §C.2 / offline-sync §A.7.
+--
+-- ── SYNC SERIALIZER NOTE (INV-ASD-8 — springboot-backend-dev) ────────────────────────────────
+--   The supplyItems sync DTO MUST exclude uses_remaining_in_open_container (column does not
+--   exist on this server table — the exclusion is by construction).
+--   A per-scoop mutation on the mobile SQLite side that changes only the local
+--   uses_remaining_in_open_container column MUST NOT be pushed (mobile sync serializer
+--   must not enqueue a push when only that local column changes).
+--   Only a container-level on_hand_qty transition (roll-over, last-container discard,
+--   set-count) egresses via sync/push — this is the "accepted ceiling" (INV-ASD-8 /
+--   pdpa-assessment INV-ASD-8 §4).
+--
+-- ── UPDATED_AT / VERSION TRIGGER GUARD (INV-ASD-8 — see V20260710000024) ────────────────────
+--   A DB-level BEFORE UPDATE trigger (trg_supply_items_sync_guard, V20260710000024) ensures
+--   that updated_at and version are NOT bumped unless at least one SYNCED column changes.
+--   SYNCED columns watched by that trigger: name, category, unit, on_hand_qty, low_threshold,
+--   low_notified_at_version, uses_per_container, deleted_at.
+--   If no watched column changed, the trigger reverts NEW.updated_at = OLD.updated_at and
+--   NEW.version = OLD.version, neutralising any JPA @PreUpdate stamp.
+--   V20260710000024 is PostgreSQL-only (PL/pgSQL); exclude it from H2 / @DataJpaTest runs.
+--   The PRIMARY covert-channel control is the ABSENCE of uses_remaining_in_open_container
+--   from the server schema; the trigger is defense-in-depth.
+--
+-- ── ADDITIVE / REVERSIBLE ──────────────────────────────────────────────────────────────────────
+--   ADD COLUMN only — nullable with a safe default (NULL).  No existing row is modified.
+--   No table rewrite required (metadata-only DDL on PostgreSQL 15+).
+--   No backfill: NULL = discrete/manual item (unlinked, whole-unit path unchanged).
+--   Rollback: ALTER TABLE supply_items DROP COLUMN uses_per_container;
+--             (Also drop the trigger / function added in V20260710000024 if rolling that back.)
+--
+-- H2 COMPATIBILITY:
+--   H2 (PostgreSQL-mode) requires one ADD COLUMN per ALTER TABLE statement.
+--   uses_per_container is the only new column in this migration — one ALTER only.
+--   The trigger is in V20260710000024 (PostgreSQL-only; requires H2 exclusion).
+
+ALTER TABLE supply_items
+    ADD COLUMN uses_per_container integer NULL
+        CHECK (uses_per_container >= 1);
+
+-- No new index added for uses_per_container.
+--   Rationale: this is a config value, not a query dimension.  Completion→decrement lookup
+--   (the hot read path) uses consumption_mapping, not supply_items (see V20260710000023).
+--   The existing ix_supply_items__sync_pull (user_id, updated_at, id) covers all access
+--   patterns for this table at MVP cardinality.

@@ -98,6 +98,28 @@ public class SupplyItem {
     private Integer lowThreshold;
 
     /**
+     * Number of uses one sealed container yields (e.g. 26 scoops per formula tin).
+     *
+     * <p>NULL = discrete/manual item (whole-unit path unchanged — no ASD container-holds-N logic).
+     * Non-null (≥1) = container-holds-N item; the on-device algorithm uses this with
+     * {@code on_hand_qty} (= container_count) to compute and decrement sub-unit draws.
+     *
+     * <p>SYNCED config column (V20260710000021 / INV-ASD-8): pushed from client, pulled to every
+     * device on change. Compliance ruling 3 allows it in the supplies collection (static config
+     * with no per-feed cadence — a single change every few tins/packs).
+     *
+     * <p><strong>INV-ASD-8 / INV-ASD-5 / INV-ASD-9:</strong>
+     * There is deliberately NO {@code usesRemainingInOpenContainer} field on this entity —
+     * that value is mobile-local-only and MUST NOT reach the server. There is also NO
+     * {@code feedingSessionId} / {@code fedAt} / per-feed amount field.
+     * Zero-linkage between the supplies side and the health/activity side is enforced by
+     * construction (column absence). The sync-guard trigger (V20260710000024, pg-only) adds
+     * defense-in-depth: it reverts {@code updated_at} / {@code version} if no SYNCED column changed.
+     */
+    @Column(name = "uses_per_container")
+    private Integer usesPerContainer;
+
+    /**
      * Cross-device de-nag marker for the low-supply alert (data-model §3.9 / offline-sync §C.2).
      * <ul>
      *   <li>{@code null}  ⇒ no outstanding low-notification for the current low-episode.</li>
@@ -253,6 +275,14 @@ public class SupplyItem {
 
     public void setLowNotifiedAtVersion(Integer lowNotifiedAtVersion) {
         this.lowNotifiedAtVersion = lowNotifiedAtVersion;
+    }
+
+    public Integer getUsesPerContainer() {
+        return usesPerContainer;
+    }
+
+    public void setUsesPerContainer(Integer usesPerContainer) {
+        this.usesPerContainer = usesPerContainer;
     }
 
     public Long getVersion() {

@@ -295,6 +295,16 @@ class SupplyItemSyncCollection implements SyncCollection {
         Object lnavRaw = record.get("lowNotifiedAtVersion");
         item.setLowNotifiedAtVersion(lnavRaw != null ? toInt(lnavRaw, 0) : null);
 
+        // usesPerContainer — nullable int ≥1; NULL = discrete item (INV-ASD-8: no
+        // usesRemainingInOpenContainer ever accepted or stored — mobile-local-only)
+        Object upcRaw = record.get("usesPerContainer");
+        if (upcRaw != null) {
+            int upc = toInt(upcRaw, 1);
+            item.setUsesPerContainer(upc >= 1 ? upc : null); // silently drop invalid values
+        } else {
+            item.setUsesPerContainer(null);
+        }
+
         // clientId — originating device UUID
         String clientIdStr = extractString(record, "clientId");
         if (clientIdStr != null) {
@@ -316,6 +326,8 @@ class SupplyItemSyncCollection implements SyncCollection {
         m.put("onHandQty", item.getOnHandQty());
         m.put("lowThreshold", item.getLowThreshold());
         m.put("lowNotifiedAtVersion", item.getLowNotifiedAtVersion());
+        // usesPerContainer: SYNCED config (INV-ASD-8 — NO usesRemainingInOpenContainer emitted)
+        m.put("usesPerContainer", item.getUsesPerContainer());
         m.put("clientId", item.getClientId());
         m.put("version", item.getVersion() != null ? item.getVersion() : 0L);
         m.put("createdAt", item.getCreatedAt());

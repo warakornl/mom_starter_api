@@ -361,6 +361,53 @@ class SupplyItemRepositoryTest {
         assertThat(item.getLowNotifiedAtVersion()).isNull();
     }
 
+    // -------------------------------------------------------------------------
+    // ASD: uses_per_container (V20260710000021)
+    // -------------------------------------------------------------------------
+
+    /**
+     * {@code uses_per_container} saves and round-trips for valid values (≥1).
+     * NULL is accepted (discrete/manual item — whole-unit path unchanged).
+     * INV-ASD-8: the entity has NO {@code usesRemainingInOpenContainer} field
+     * (absent by construction — server schema has no such column).
+     */
+    @Test
+    void usesPerContainer_nullAndValidValues_roundTrip() {
+        User u = savedUser("supply-upc1@example.com");
+
+        // NULL = discrete item
+        SupplyItem discrete = buildItem(u.getId(), "Organic Diapers", "diapers");
+        discrete = items.saveAndFlush(discrete);
+        assertThat(discrete.getUsesPerContainer()).isNull();
+
+        // Valid value ≥1 (e.g. 26 scoops per formula tin)
+        SupplyItem container = buildItem(u.getId(), "Formula Tin", "feeding");
+        container.setUsesPerContainer(26);
+        container = items.saveAndFlush(container);
+        assertThat(container.getUsesPerContainer()).isEqualTo(26);
+
+        // INV-ASD-8: no usesRemainingInOpenContainer on entity (mobile-local-only)
+        assertThat(java.util.Arrays.stream(SupplyItem.class.getDeclaredFields())
+                .map(java.lang.reflect.Field::getName))
+                .doesNotContain("usesRemainingInOpenContainer");
+    }
+
+    /**
+     * DB {@code CHECK (uses_per_container >= 1)} rejects zero.
+     * A zero would produce a non-terminating roll-over in the decrement algorithm.
+     */
+    @Test
+    void usesPerContainer_zeroRejectedByDbConstraint() {
+        User u = savedUser("supply-upc2@example.com");
+        SupplyItem item = buildItem(u.getId(), "Formula", "feeding");
+        item.setUsesPerContainer(0);   // violates CHECK (uses_per_container >= 1)
+
+        assertThatThrownBy(() -> {
+            items.save(item);
+            items.flush();
+        }).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
     /**
      * Pull query returns items scoped to the requesting user only — a different user's
      * items are never included in the response (data isolation invariant).
