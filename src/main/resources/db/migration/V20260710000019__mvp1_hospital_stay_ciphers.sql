@@ -1,0 +1,97 @@
+-- mvp1 — pregnancy_profile hospital-stay ciphers: additive nullable bytea columns for
+-- admission and discharge civil dates (PDPA s.26 sensitive personal data — Option A).
+-- ADR: docs/api-spec/pregnancy-summary-design.md §1 (placement) + §1.2 (Option A encryption) +
+--       §1.5 (PDPA pipeline) + §1.6 (DB delta) — APPROVED 2026-07-10.
+-- Parent entity: V20260629000004__mvp1_pregnancy_profile.sql.
+-- Sibling cipher migration: V20260707000018__mvp1_name_ciphers.sql (same pattern, same seam).
+--
+-- PURPOSE: stores two optional delivery-record fields (hospital admission date, discharge date)
+-- on the existing 1:1 pregnancy_profile row — siblings of delivery_type_cipher / birth_note_cipher
+-- / the name ciphers.  Both are NULLABLE per design (OQ-PS1 RESOLVED — both optional;
+-- pregnancy-summary-design.md §1.1/§1.3).
+--
+-- ENCRYPTION POSTURE — Option A (ADR pregnancy-summary-design.md §1.2):
+--   Both columns hold `bytea` under the SAME no-op MVP / AES-256-GCM seam as the sibling
+--   health ciphers (delivery_type_cipher, birth_note, mother_first_name_cipher, baby_name_cipher,
+--   expense.amount_cipher, medication_plan.name_cipher/dose_cipher, etc.).
+--   Cleartext inside each column = a civil date string `YYYY-MM-DD`, UTF-8 bytes.
+--   MVP POSTURE: hold PLAINTEXT BYTES (no-op / passthrough cipher — KMS + AES-GCM build is
+--   deferred).  Real AES-256-GCM lands in THESE SAME COLUMNS at the KMS/EAS milestone with
+--   ZERO schema change and ZERO contract change (the delivery_type_cipher / name-fields
+--   Option-A precedent).
+--   At-rest protection for MVP relies on AWS RDS volume/disk encryption, IAM least-privilege,
+--   and TLS in transit — NOT per-field encryption.
+--   PDPA residual risk: acknowledged by owner under the same posture as the name-fields
+--   OQ-N-OWN1 resolution (class-same, no new owner-ack required per pdpa-assessment.md §2.6).
+--   Security-compliance formal ruling: pdpa-assessment.md §2.6 (rev3.14) — 🟡, inform-only.
+--
+-- AAD TUPLES (field-encryption-appsec.md RULING 2a/2b — appsec-engineer to register):
+--   v1:<accountId>:pregnancyProfile:<accountId>:hospitalAdmissionDate
+--   v1:<accountId>:pregnancyProfile:<accountId>:hospitalDischargeDate
+--   recordId = accountId (row-per-account model); logical names contain no ':'.
+--   Frozen forever — rename ⇒ bump version prefix + re-encrypt.
+--   appsec-engineer adds these two tuples to the code-constant AAD registry + golden test
+--   vectors, mirroring the three name-field tuples registered at V20260707000018.
+--
+-- SERVER NEVER PARSES / QUERIES these cipher columns.
+--   - plaintext = civil date `YYYY-MM-DD` — server never decodes, never validates temporally
+--   - no ORDER BY, WHERE, or aggregate over either *_date_cipher column
+--   - temporal validation (discharge >= admission, <= today, OQ-PS4 warn) is CLIENT-SIDE
+--   - server enforces only a ciphertext byte-cap → validation_error sub-code
+--     `hospital_date_too_large` (system-analyst assigns; mirrors note_too_large / name_too_large)
+--   - NO BLOOM / bidx index: hospital dates are NEVER queried server-side; contrast email_bidx
+--     which enables server-side login lookup
+--
+-- NO INDEX on either column.
+--   Rationale: these cipher columns are NEVER queried server-side — no WHERE, no ORDER BY,
+--   no aggregate.  The only server access patterns are:
+--     (a) SELECT * FROM pregnancy_profile WHERE user_id = ?  (profile GET — full row fetch;
+--         the existing UNIQUE(user_id) constraint/index covers this efficiently).
+--     (b) UPDATE ... SET *_cipher = NULL WHERE user_id = ?  (per-row shred — also covered
+--         by the UNIQUE(user_id) index on the single-row result).
+--   No new server-side query pattern exists or is anticipated for encrypted date bytes.
+--   Hospital dates are display-only recall data aggregated ON-DEVICE in the summary
+--   (pregnancy-summary-design.md §2) and decrypted into the PDF at egress — zero server
+--   compute dependency (unlike birth_date which is server-computed for postpartum weeks).
+--
+-- CRYPTO-SHRED OBLIGATION (PDPA ม.33 / pregnancy-summary-design.md §1.5 / pdpa §2.6 🔴):
+--   Both columns MUST be SET to NULL in the same UPDATE that writes deleted_at on the
+--   profile row (per-row cipher-NULL shred, §4.4(A)).  Shred is surfaced through:
+--
+--     PregnancyProfileRepository.shredCiphersByUserId(userId)
+--
+--   which is extended (this slice) to include hospital_admission_date_cipher and
+--   hospital_discharge_date_cipher alongside the three name ciphers already in that method.
+--
+--   springboot-backend-dev MUST CALL shredCiphersByUserId(userId) inside the profile
+--   soft-delete / tombstone UPDATE path (the same path that already calls it for the name
+--   ciphers — analogous to MedicationPlanSyncCollection.applyDelete()).
+--
+--   The DEK-based T0 crypto-shred (AccountService.deleteAccount → accountDekRepository
+--   .deleteByUserId) destroys all *_cipher bytes indirectly (KMS.Decrypt becomes impossible).
+--   The per-row NULL shred is the belt-and-suspenders PDPA T0 evidence that survives on disk.
+--
+-- TIER-1 HARD-PURGE: pregnancy_profile is ALREADY listed in
+--   AccountErasureService.TIER1_CHILD_DELETE_ORDER (confirmed — no new entry needed).
+--   The whole row is hard-deleted at 180d; both cipher columns are carried along automatically
+--   with the row — no separate purge entry is needed.
+--
+-- ADDITIVE / REVERSIBLE: nullable ADD COLUMN only — zero existing data touched.
+-- No new constraints, no new triggers, no new indexes (see NO INDEX above).
+-- DOWN (if ever needed): ALTER TABLE pregnancy_profile DROP COLUMN <col> (additive-only;
+-- dropping is safe and data-loss is INTENTIONAL in an erasure context).
+--
+-- NO GRANT statements — roles (mom_app_rw / mom_gc / mom_readonly / mom_owner) are managed
+-- outside Flyway (H2 test environment has no role DDL; consistent with all prior migrations).
+
+ALTER TABLE pregnancy_profile
+    ADD COLUMN hospital_admission_date_cipher bytea NULL;
+
+ALTER TABLE pregnancy_profile
+    ADD COLUMN hospital_discharge_date_cipher bytea NULL;
+
+-- No index on either column.
+-- Rationale: see "NO INDEX" block in the header above.
+-- The columns are never queried server-side; UNIQUE(user_id) covers both access patterns
+-- (full-row GET and per-row NULL-shred UPDATE).  Hospital dates are display-only ciphertext
+-- decrypted on-device; there is no server computation or server-side filtering over them.
