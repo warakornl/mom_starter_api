@@ -80,16 +80,27 @@ NOT the DB column names and NOT the wire/JSON names.
 | 9 | `pregnancyProfile`  | `motherFirstName`        | `pregnancy_profile.mother_first_name_cipher` | **`accountId`** (row-per-account) |
 | 10| `pregnancyProfile`  | `motherLastName`         | `pregnancy_profile.mother_last_name_cipher`  | **`accountId`** (row-per-account) |
 | 11| `pregnancyProfile`  | `babyName`               | `pregnancy_profile.baby_name_cipher`         | **`accountId`** (row-per-account) |
+| 12| `pregnancyProfile`  | `hospitalAdmissionDate`  | `pregnancy_profile.hospital_admission_date_cipher` | **`accountId`** (row-per-account) |
+| 13| `pregnancyProfile`  | `hospitalDischargeDate`  | `pregnancy_profile.hospital_discharge_date_cipher` | **`accountId`** (row-per-account) |
 
-> 🔴 **Tuples 9–11 are the FIRST row-per-account entries in this registry.** Unlike
+> 🔴 **Tuples 9–13 are the row-per-account entries in this registry.** Unlike
 > tuples 1–8 (whose `recordId` is the row's own UUID), `pregnancy_profile` stores exactly
 > **one row per account**, so its AAD `recordId` **is the `accountId` itself** (RULING 2b).
 > This means the same UUID appears **twice** in the AAD string — once in the `accountId`
 > slot and once in the `recordId` slot. The mobile `FieldCipher` MUST use `accountId` (NOT
-> the `pregnancy_profile` row's own `id`) as `recordId` when encrypting these three fields,
-> or every name will fail to decrypt on export (silent health-data loss). This matches
+> the `pregnancy_profile` row's own `id`) as `recordId` when encrypting these five fields,
+> or every value will fail to decrypt on export (silent health-data loss). This matches
 > `AccountExportService.toProfileEntry`, which builds
 > `new FieldAad(accountIdStr, "pregnancyProfile", accountIdStr, <fieldName>)`.
+>
+> Tuples 12–13 (`hospitalAdmissionDate`/`hospitalDischargeDate`) are added at migration
+> `V20260710000019` (see `docs/api-spec/pregnancy-summary-design.md` §1.2). Their plaintext is
+> a civil date string `YYYY-MM-DD` (UTF-8); the server never parses or validates it. The
+> backend slice MUST add the matching frozen constants
+> `FIELD_PP_HOSPITAL_ADMISSION = "hospitalAdmissionDate"` and
+> `FIELD_PP_HOSPITAL_DISCHARGE = "hospitalDischargeDate"` to `AccountExportService`, and its
+> `toProfileEntry` MUST build `new FieldAad(accountIdStr, "pregnancyProfile", accountIdStr,
+> "hospitalAdmissionDate"/"hospitalDischargeDate")` — byte-for-byte the tokens above.
 
 **Exact literal AAD string per tuple** (using sample canonical lowercase UUIDs —
 `accountId = 11111111-1111-1111-1111-111111111111`; each row id shown per collection):
@@ -107,8 +118,10 @@ NOT the DB column names and NOT the wire/JSON names.
 | 9 | `v1:11111111-1111-1111-1111-111111111111:pregnancyProfile:11111111-1111-1111-1111-111111111111:motherFirstName`                    |
 | 10| `v1:11111111-1111-1111-1111-111111111111:pregnancyProfile:11111111-1111-1111-1111-111111111111:motherLastName`                     |
 | 11| `v1:11111111-1111-1111-1111-111111111111:pregnancyProfile:11111111-1111-1111-1111-111111111111:babyName`                           |
+| 12| `v1:11111111-1111-1111-1111-111111111111:pregnancyProfile:11111111-1111-1111-1111-111111111111:hospitalAdmissionDate`              |
+| 13| `v1:11111111-1111-1111-1111-111111111111:pregnancyProfile:11111111-1111-1111-1111-111111111111:hospitalDischargeDate`              |
 
-> Note how tuples 9–11 repeat the **same** `accountId` UUID in both the `accountId` and
+> Note how tuples 9–13 repeat the **same** `accountId` UUID in both the `accountId` and
 > `recordId` positions — that is the row-per-account shape (RULING 2b), and it is
 > deliberate, not a typo.
 
@@ -126,8 +139,8 @@ NOT the DB column names and NOT the wire/JSON names.
 | `kickCountSession` | the `kick_count_session` row's id | No               |
 | `pregnancyProfile` | **the `accountId`** (not the row's id) | **Yes** 🔴  |
 
-Tuples 1–8 use the row's own id as `recordId`. `pregnancyProfile` (tuples 9–11) is the
-**first and only** row-per-account collection: because there is exactly one
+Tuples 1–8 use the row's own id as `recordId`. `pregnancyProfile` (tuples 9–13) is the
+**only** row-per-account collection: because there is exactly one
 `pregnancy_profile` row per account, its `recordId` **is the `accountId`** (RULING 2b),
 so the `pregnancy_profile.id` UUID never appears in any AAD. This is enforced in code by
 `AccountExportService.toProfileEntry`, which passes `accountIdStr` as **both** the first
@@ -180,20 +193,28 @@ blind-spot**.
      doc (rows 1–3).
   3. Whenever a new `bytea` health column is added, adding its row to §3 is a PR blocker.
 
-### G2 — `pregnancy_profile` name fields now encrypted (row-per-account) — RESOLVED 🟢
+### G2 — `pregnancy_profile` name + hospital-stay fields now encrypted (row-per-account) — RESOLVED 🟢
 
-**Update (2026-07):** `pregnancy_profile` now stores three encrypted name fields —
-`mother_first_name_cipher`, `mother_last_name_cipher`, `baby_name_cipher` — decrypted by
-`AccountExportService.toProfileEntry`. These are registered as tuples **9–11** in §3 with
+**Update (2026-07):** `pregnancy_profile` now stores five encrypted fields — the three name
+fields `mother_first_name_cipher`, `mother_last_name_cipher`, `baby_name_cipher` (tuples
+9–11) plus the two hospital-stay date fields `hospital_admission_date_cipher`,
+`hospital_discharge_date_cipher` (tuples 12–13, migration `V20260710000019`) — all decrypted
+by `AccountExportService.toProfileEntry`. These are registered as tuples **9–13** in §3 with
 the row-per-account `recordId = accountId` rule (RULING 2b) and each has a committed golden
 vector (§8). This closes the former gap.
 
 - Remaining plaintext fields (`birth_note`, `edd`, `delivery_type`, etc.) are still exported
   directly (`p.getBirthNote()`) and are **not** encrypted; they have no AAD tuple by design.
 - **Invariant kept:** the row-per-account shape (`recordId = accountId`) must never be
-  copied to a genuinely per-row collection, and vice-versa. Tuples 9–11 are the sole
+  copied to a genuinely per-row collection, and vice-versa. Tuples 9–13 are the sole
   row-per-account entries; if a new `pregnancy_profile` cipher field is added, it inherits
   `recordId = accountId` and needs its own golden vector before mobile encrypts it.
+- **Backend follow-up (tuples 12–13):** the golden vectors and drift-guard for
+  `hospitalAdmissionDate`/`hospitalDischargeDate` are committed here, but their frozen
+  constants `FIELD_PP_HOSPITAL_ADMISSION = "hospitalAdmissionDate"` /
+  `FIELD_PP_HOSPITAL_DISCHARGE = "hospitalDischargeDate"` are **not yet** in
+  `AccountExportService`. The drift-guard test (§8) is a deliberate RED until the backend
+  slice adds those two constants and wires `toProfileEntry` to decrypt the two cipher columns.
 
 ### G3 — `account_dek.wrapped_dek` is `bytea` but is NOT a field envelope 🟢
 
@@ -228,10 +249,13 @@ demo vector does not satisfy that requirement.
 
 ## 8. Golden-vector coverage requirement
 
-- A committed golden vector MUST exist for **every one of the 11 tuples** in §3. Coverage
-  is currently **11/11** (`golden-vectors.json` → `registry_vectors.vectors`), locked by
+- A committed golden vector MUST exist for **every one of the 13 tuples** in §3. Coverage
+  is currently **13/13** (`golden-vectors.json` → `registry_vectors.vectors`), locked by
   `FieldAadRegistryGoldenVectorTest` (encrypt-golden-match / roundtrip / tamper-negative /
   drift-guard per tuple). The `expenses/note` demo vector is separate and NOT counted here.
+  For tuples 12–13 the encrypt-golden-match / roundtrip / tamper assertions pass today; the
+  **drift-guard is a deliberate RED** until the backend adds the `FIELD_PP_HOSPITAL_ADMISSION`
+  / `FIELD_PP_HOSPITAL_DISCHARGE` constants (see §6 G2).
 - Each vector fixes: `dek_hex`, `iv_hex`, `plaintext`, the exact `aad_string`, and the
   `expected_envelope_hex` / `base64_wire_value`.
 - **Both** sides must assert against the same vectors: server `FieldEnvelopeDecryptor`
@@ -248,7 +272,7 @@ The mobile `FieldCipher` MUST, for each field it encrypts:
 - Build the AAD via the §2 format: `"v1:"` + accountId + `":"` + collection + `":"` +
   recordId + `":"` + fieldName, UTF-8, in that order.
 - Use `recordId` per §3.1: the row's own UUID for tuples 1–8, but **the `accountId`** for
-  the row-per-account `pregnancyProfile` tuples 9–11 (RULING 2b).
+  the row-per-account `pregnancyProfile` tuples 9–13 (RULING 2b).
 - Lowercase/canonicalize UUIDs to match `UUID.toString()` (§5).
 
 The mobile `FieldCipher` MUST **NOT**:
@@ -261,9 +285,9 @@ The mobile `FieldCipher` MUST **NOT**:
 - Use the DB **table** name as `collection` — e.g. NOT `self_log` / `kick_count_session`
   (use `selfLog` / `kickCountSession`), NOT `medication_plan` (use `medicationPlan`).
 - Invent a tuple for any field not in §3 (e.g. `expenses/note`, or any `pregnancyProfile`
-  field OTHER than the three registered name fields) — encrypting an unregistered field is
-  prohibited until it is added here.
-- Use the `pregnancy_profile` row's own `id` as `recordId` for tuples 9–11 — for those
+  field OTHER than the five registered fields — three names + two hospital-stay dates) —
+  encrypting an unregistered field is prohibited until it is added here.
+- Use the `pregnancy_profile` row's own `id` as `recordId` for tuples 9–13 — for those
   row-per-account fields `recordId` MUST be the `accountId`.
 - Insert `':'`, whitespace, padding, or perform Unicode normalization on any component.
 

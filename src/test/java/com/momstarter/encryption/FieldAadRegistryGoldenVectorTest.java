@@ -21,17 +21,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Golden-vector tests for ALL 11 frozen AAD registry tuples defined in
+ * Golden-vector tests for ALL 13 frozen AAD registry tuples defined in
  * {@code docs/security/field-aad-registry.md} (appsec gap G4 — closed by this class).
  *
- * <p>Tuples 1-8 are row-scoped ({@code recordId} = the row's own id). Tuples 9-11
- * ({@code pregnancyProfile}) are the FIRST row-per-account entries: {@code recordId}
+ * <p>Tuples 1-8 are row-scoped ({@code recordId} = the row's own id). Tuples 9-13
+ * ({@code pregnancyProfile}) are row-per-account entries: {@code recordId}
  * EQUALS {@code accountId} (RULING 2b), so the same UUID appears in both the accountId
  * and recordId AAD slots. The vector JSON carries {@code recordId == accountId} for those
- * three, so the AAD builder below needs no special-casing — it reads recordId from JSON.
+ * five, so the AAD builder below needs no special-casing — it reads recordId from JSON.
+ * Tuples 12-13 ({@code hospitalAdmissionDate}/{@code hospitalDischargeDate}) are added at
+ * migration {@code V20260710000019}; their drift-guard maps to the
+ * {@code FIELD_PP_HOSPITAL_ADMISSION}/{@code FIELD_PP_HOSPITAL_DISCHARGE} constants that the
+ * backend slice MUST add to {@link AccountExportService} (until then the drift-guard (d)
+ * test for those two tuples is a deliberate RED — see class-level note in the task report).
  *
  * <p>Before this class, {@code golden-vectors.json} pinned only the demo
- * {@code expenses/note} tuple. Real-tuple coverage was 0/11. This class closes
+ * {@code expenses/note} tuple. Real-tuple coverage was 0/13. This class closes
  * that gap by:
  * <ol>
  *   <li><b>Golden match</b> — AES-256-GCM with a fixed IV must produce byte-identical
@@ -71,10 +76,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>Shared test DEK: 32 zero bytes (AES-256, test-only).</li>
  *   <li>Shared accountId: {@code cccccccc-cccc-cccc-cccc-cccccccccccc}.</li>
  *   <li>Shared recordId (tuples 1-8): {@code dddddddd-dddd-dddd-dddd-dddddddddddd} (client-generated UUID).</li>
- *   <li>Row-per-account recordId (tuples 9-11, pregnancyProfile): equals the accountId
+ *   <li>Row-per-account recordId (tuples 9-13, pregnancyProfile): equals the accountId
  *       {@code cccccccc-cccc-cccc-cccc-cccccccccccc} (RULING 2b) — read straight from the vector JSON.</li>
- *   <li>Per-vector IVs: {@code 000000000000000000000001} through {@code 00000000000000000000000b}
- *       (last byte = 1..11) — demonstrates IV independence; each vector has a distinct nonce.</li>
+ *   <li>Per-vector IVs: {@code 000000000000000000000001} through {@code 00000000000000000000000d}
+ *       (last byte = 1..13) — demonstrates IV independence; each vector has a distinct nonce.</li>
  *   <li>Plaintexts: realistic values including Thai UTF-8 multibyte strings to prove
  *       UTF-8 encoding correctness end-to-end.</li>
  * </ul>
@@ -88,7 +93,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * @see FieldEnvelopeTest#GoldenVectors for the original demo golden vector
  * @see AccountExportService for the frozen AAD constant definitions
  */
-@DisplayName("Registry golden vectors — all 11 frozen AAD tuples (gap G4)")
+@DisplayName("Registry golden vectors — all 13 frozen AAD tuples (gap G4)")
 class FieldAadRegistryGoldenVectorTest {
 
     // -----------------------------------------------------------------------
@@ -137,6 +142,8 @@ class FieldAadRegistryGoldenVectorTest {
      *   <li>{@code "pregnancyProfile:motherFirstName"} → {@code AccountExportService.FIELD_PP_MOTHER_FIRST_NAME}</li>
      *   <li>{@code "pregnancyProfile:motherLastName"}  → {@code AccountExportService.FIELD_PP_MOTHER_LAST_NAME}</li>
      *   <li>{@code "pregnancyProfile:babyName"}         → {@code AccountExportService.FIELD_PP_BABY_NAME}</li>
+     *   <li>{@code "pregnancyProfile:hospitalAdmissionDate"} → {@code AccountExportService.FIELD_PP_HOSPITAL_ADMISSION} (backend must add this constant = "hospitalAdmissionDate")</li>
+     *   <li>{@code "pregnancyProfile:hospitalDischargeDate"} → {@code AccountExportService.FIELD_PP_HOSPITAL_DISCHARGE} (backend must add this constant = "hospitalDischargeDate")</li>
      * </ul>
      */
     private static final Map<String, String> FIELD_CONST_NAMES = Map.ofEntries(
@@ -150,7 +157,9 @@ class FieldAadRegistryGoldenVectorTest {
             Map.entry("kickCountSession:note",         "FIELD_KICK_NOTE"),
             Map.entry("pregnancyProfile:motherFirstName", "FIELD_PP_MOTHER_FIRST_NAME"),
             Map.entry("pregnancyProfile:motherLastName",  "FIELD_PP_MOTHER_LAST_NAME"),
-            Map.entry("pregnancyProfile:babyName",        "FIELD_PP_BABY_NAME")
+            Map.entry("pregnancyProfile:babyName",        "FIELD_PP_BABY_NAME"),
+            Map.entry("pregnancyProfile:hospitalAdmissionDate", "FIELD_PP_HOSPITAL_ADMISSION"),
+            Map.entry("pregnancyProfile:hospitalDischargeDate", "FIELD_PP_HOSPITAL_DISCHARGE")
     );
 
     // -----------------------------------------------------------------------
@@ -227,8 +236,8 @@ class FieldAadRegistryGoldenVectorTest {
                 ));
             }
             assertThat(vectors)
-                    .as("registry_vectors.vectors must contain exactly 11 entries (one per registered AAD tuple)")
-                    .hasSize(11);
+                    .as("registry_vectors.vectors must contain exactly 13 entries (one per registered AAD tuple)")
+                    .hasSize(13);
             return vectors.stream();
         } catch (Exception e) {
             throw new RuntimeException("Failed to load registry vectors from golden-vectors.json", e);
@@ -379,6 +388,8 @@ class FieldAadRegistryGoldenVectorTest {
      *   <li>pregnancyProfile / motherFirstName → COLL_PREGNANCY_PROFILE + FIELD_PP_MOTHER_FIRST_NAME (row-per-account)</li>
      *   <li>pregnancyProfile / motherLastName  → COLL_PREGNANCY_PROFILE + FIELD_PP_MOTHER_LAST_NAME (row-per-account)</li>
      *   <li>pregnancyProfile / babyName        → COLL_PREGNANCY_PROFILE + FIELD_PP_BABY_NAME (row-per-account)</li>
+     *   <li>pregnancyProfile / hospitalAdmissionDate → COLL_PREGNANCY_PROFILE + FIELD_PP_HOSPITAL_ADMISSION (row-per-account; backend must add constant)</li>
+     *   <li>pregnancyProfile / hospitalDischargeDate → COLL_PREGNANCY_PROFILE + FIELD_PP_HOSPITAL_DISCHARGE (row-per-account; backend must add constant)</li>
      * </ul>
      */
     @ParameterizedTest(name = "{0}")
