@@ -56,6 +56,14 @@ class ConsumptionMappingController {
     /** feeding_formula activityType requires dual consent (infant_feeding + general_health). */
     private static final String FORMULA_ACTIVITY_TYPE = "feeding_formula";
 
+    /**
+     * Closed set of valid {@code activityType} values (mirrors DB CHECK constraint).
+     * An unrecognised value in the GET query param → {@code 400 validation_error(unknown_activity_type)}.
+     */
+    private static final Set<String> VALID_ACTIVITY_TYPES = Set.of(
+            "feeding_formula", "diaper_change", "bathing"
+    );
+
     private final ConsumptionMappingRepository repository;
     private final ConsentChecker consentChecker;
     private final EmailVerifiedGuard emailVerifiedGuard;
@@ -74,11 +82,24 @@ class ConsumptionMappingController {
     @GetMapping
     ResponseEntity<Map<String, Object>> list(
             @AuthenticationPrincipal Jwt jwt,
+            @RequestParam(required = false) String activityType,
             @RequestParam(required = false) String cursor,
             @RequestParam(required = false) Integer limit
     ) {
         emailVerifiedGuard.requireVerified(jwt);
         UUID userId = UUID.fromString(jwt.getSubject());
+
+        // Validate activityType query param (contract §GET /consumption-mappings):
+        // must be one of the allowed enum values or absent; unknown value → 400
+        final String validatedActivityType;
+        if (activityType != null && !activityType.isBlank()) {
+            if (!VALID_ACTIVITY_TYPES.contains(activityType)) {
+                throw new ApiException(400, "validation_error", "unknown_activity_type");
+            }
+            validatedActivityType = activityType;
+        } else {
+            validatedActivityType = null;
+        }
 
         // general_health is required for all rows
         if (!consentChecker.isGranted(userId, "general_health")) {
@@ -124,6 +145,13 @@ class ConsumptionMappingController {
         if (!infantFeedingGranted) {
             allLive = allLive.stream()
                     .filter(m -> !FORMULA_ACTIVITY_TYPE.equals(m.getActivityType()))
+                    .collect(Collectors.toList());
+        }
+
+        // Filter by activityType query param (ADDITIONAL, applied after consent filtering)
+        if (validatedActivityType != null) {
+            allLive = allLive.stream()
+                    .filter(m -> validatedActivityType.equals(m.getActivityType()))
                     .collect(Collectors.toList());
         }
 

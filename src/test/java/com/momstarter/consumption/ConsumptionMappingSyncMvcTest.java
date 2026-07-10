@@ -414,4 +414,92 @@ class ConsumptionMappingSyncMvcTest {
         assertThat(items.size()).isEqualTo(1);
         assertThat(items.get(0).at("/activityType").asText()).isEqualTo("diaper_change");
     }
+
+    // -------------------------------------------------------------------------
+    // Tests: activityType query param filter (contract §GET /consumption-mappings)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void get_activityTypeFilter_diaperChange_returnsOnlyDiaperChangeRows() throws Exception {
+        // ?activityType=diaper_change must exclude bathing and feeding_formula rows
+        grantDualConsent();
+
+        ConsumptionMapping diaper = new ConsumptionMapping();
+        diaper.setId(UUID.randomUUID());
+        diaper.setUserId(user.getId());
+        diaper.setActivityType("diaper_change");
+        diaper.setDefaultQty(1);
+        diaper.setEnabled(true);
+        mappings.saveAndFlush(diaper);
+
+        ConsumptionMapping bathing = new ConsumptionMapping();
+        bathing.setId(UUID.randomUUID());
+        bathing.setUserId(user.getId());
+        bathing.setActivityType("bathing");
+        bathing.setDefaultQty(1);
+        bathing.setEnabled(true);
+        mappings.saveAndFlush(bathing);
+
+        ConsumptionMapping formula = new ConsumptionMapping();
+        formula.setId(UUID.randomUUID());
+        formula.setUserId(user.getId());
+        formula.setActivityType("feeding_formula");
+        formula.setDefaultQty(2);
+        formula.setEnabled(true);
+        mappings.saveAndFlush(formula);
+
+        var result = mvc.perform(get("/v1/consumption-mappings")
+                .header("Authorization", "Bearer " + token)
+                .param("activityType", "diaper_change"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String body = result.getResponse().getContentAsString();
+        var json = mapper.readTree(body);
+        var items = json.at("/items");
+
+        assertThat(items.size()).isEqualTo(1);
+        assertThat(items.get(0).at("/activityType").asText()).isEqualTo("diaper_change");
+    }
+
+    @Test
+    void get_activityTypeFilter_invalidValue_returns400_unknownActivityType() throws Exception {
+        // Any value outside feeding_formula|diaper_change|bathing must be rejected with 400
+        grantOnlyGeneralHealth();
+
+        mvc.perform(get("/v1/consumption-mappings")
+                .header("Authorization", "Bearer " + token)
+                .param("activityType", "invalid_value"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("validation_error"))
+                .andExpect(jsonPath("$.details").value("unknown_activity_type"));
+    }
+
+    @Test
+    void get_activityTypeFilter_feedingFormula_infantFeedingAbsent_returnsEmpty() throws Exception {
+        // activityType=feeding_formula + no infant_feeding consent → consent filtering removes
+        // feeding_formula rows first, then activityType filter is applied → empty result (not 403)
+        grantOnlyGeneralHealth(); // infant_feeding NOT granted
+
+        ConsumptionMapping formula = new ConsumptionMapping();
+        formula.setId(UUID.randomUUID());
+        formula.setUserId(user.getId());
+        formula.setActivityType("feeding_formula");
+        formula.setDefaultQty(2);
+        formula.setEnabled(true);
+        mappings.saveAndFlush(formula);
+
+        var result = mvc.perform(get("/v1/consumption-mappings")
+                .header("Authorization", "Bearer " + token)
+                .param("activityType", "feeding_formula"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String body = result.getResponse().getContentAsString();
+        var json = mapper.readTree(body);
+        var items = json.at("/items");
+
+        // Consent filter strips feeding_formula rows; activityType filter then sees 0 remaining
+        assertThat(items.size()).isEqualTo(0);
+    }
 }
