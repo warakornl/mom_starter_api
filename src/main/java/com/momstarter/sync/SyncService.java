@@ -169,12 +169,24 @@ public class SyncService {
 
             SyncCollection collection = collOpt.get();
 
-            // Per-collection consent check
+            // Per-collection consent check (primary)
             String perCollConsent = collection.perCollectionConsentType();
             if (perCollConsent != null && !consentChecker.isGranted(userId, perCollConsent)) {
                 rejected.add(new Rejected(collectionName, null, "consent_required", perCollConsent));
                 continue;
             }
+
+            // Additional per-collection consent types (e.g. feedingSessions needs
+            // general_health (primary above) + infant_feeding (additional below))
+            boolean additionalConsentDenied = false;
+            for (String additionalConsent : collection.additionalCollectionConsentTypes()) {
+                if (!consentChecker.isGranted(userId, additionalConsent)) {
+                    rejected.add(new Rejected(collectionName, null, "consent_required", additionalConsent));
+                    additionalConsentDenied = true;
+                    break; // report first missing additional consent; re-push after granting
+                }
+            }
+            if (additionalConsentDenied) continue;
 
             // Batch-pre-load existing entities (avoid N+1)
             Set<UUID> allIds = collectIds(changes);

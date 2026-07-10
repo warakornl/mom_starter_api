@@ -45,6 +45,27 @@ public interface SyncCollection {
     String perCollectionConsentType();
 
     /**
+     * Additional per-collection consent types required BEYOND {@link #perCollectionConsentType()}.
+     *
+     * <p>Use this for dual-consent collections (e.g. {@code feedingSessions} requires BOTH
+     * {@code general_health} (primary, via {@link #perCollectionConsentType()}) AND
+     * {@code infant_feeding} (additional, via this method)).
+     *
+     * <p>The default implementation returns an empty list (no additional gates — the common case).
+     * Implementations override this only when a collection requires more than one per-collection
+     * consent type at push time.
+     *
+     * <p>ALL returned consent types must be granted for the collection to be processed.
+     * A missing type is reported as a {@code consent_required} rejected entry for the entire
+     * collection (same as {@link #perCollectionConsentType()}).
+     *
+     * @return list of additional consent-type strings (empty by default, never null)
+     */
+    default List<String> additionalCollectionConsentTypes() {
+        return List.of();
+    }
+
+    /**
      * Pre-load existing entities for a set of ids in one query (batch, avoids N+1).
      * Returns a map of {@code id → entity}; absent entries mean no server-side row for that id.
      *
