@@ -45,7 +45,10 @@ public class SyncCollectionRegistry {
             "expenses",
             "selfLogs",
             "medicationPlans",
-            "medicationLogs");
+            "medicationLogs",
+            // ASD additions (V20260710000020-0023):
+            "feedingSessions",          // immutable event; dual-gate general_health+infant_feeding
+            "consumptionMappings");     // mutable LWW; per-row consent gate
 
     public SyncCollectionRegistry(List<SyncCollection> collections) {
         this.byName = collections.stream()
