@@ -48,6 +48,20 @@ public record PregnancyProfileExportEntry(
          * AAD: collection="pregnancyProfile", field="babyName", recordId=accountId.
          */
         String babyName,
+        /**
+         * Decrypted hospital admission date ({@code YYYY-MM-DD} string), or {@code null}
+         * when cipher column is NULL (never set or crypto-shredded at T0).
+         * AAD: collection="pregnancyProfile", field="hospitalAdmissionDate", recordId=accountId.
+         * The server decrypts and exports the readable date string for PDPA ม.30 completeness.
+         * (pregnancy-summary-design.md §1.5 / V20260710000019)
+         */
+        String hospitalAdmissionDate,
+        /**
+         * Decrypted hospital discharge date ({@code YYYY-MM-DD} string), or {@code null}
+         * when cipher column is NULL.
+         * AAD: collection="pregnancyProfile", field="hospitalDischargeDate", recordId=accountId.
+         */
+        String hospitalDischargeDate,
         Instant createdAt,
         Instant updatedAt,
         Instant deletedAt
