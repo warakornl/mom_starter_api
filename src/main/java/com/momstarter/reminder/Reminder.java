@@ -131,6 +131,23 @@ public class Reminder {
     @Column(nullable = false)
     private boolean active = true;
 
+    /**
+     * Optional tag marking this reminder as a care-activity reminder for auto-stock-decrement.
+     *
+     * <p>Constrained by DB CHECK to {@code 'diaper_change' | 'bathing'} (V20260710000022).
+     * NULL = not a care-activity reminder (default; all existing reminders unaffected).
+     *
+     * <p>When a linked ReminderOccurrence transitions to {@code done}, the on-device
+     * auto-decrement trigger reads this field, looks up enabled ConsumptionMapping rows
+     * for the activity_type, and decrements the linked supply item(s) (ASD §1.1).
+     *
+     * <p>Gate: {@code general_health} (diaper_change and bathing are RoPA A17 activities).
+     * NOTE: 'feeding_formula' is intentionally absent — formula feeding uses
+     * {@code FeedingSession(kind=formula)}, NOT a Reminder (ASD §1.1 / INV-ASD-1).
+     */
+    @Column(name = "care_activity_type")
+    private String careActivityType;
+
     // -------------------------------------------------------------------------
     // <sync> block (data-model §1.2 / §2 / database-schema §0.3)
     // -------------------------------------------------------------------------
@@ -240,4 +257,7 @@ public class Reminder {
 
     public UUID getClientId() { return clientId; }
     public void setClientId(UUID clientId) { this.clientId = clientId; }
+
+    public String getCareActivityType() { return careActivityType; }
+    public void setCareActivityType(String careActivityType) { this.careActivityType = careActivityType; }
 }

@@ -347,4 +347,51 @@ class ReminderRepositoryTest {
         assertThat(saved.getType()).isEqualTo("supply_restock");
         assertThat(saved.getSourceRefType()).isEqualTo("supply_item");
     }
+
+    // -------------------------------------------------------------------------
+    // ASD: care_activity_type (V20260710000022)
+    // -------------------------------------------------------------------------
+
+    /**
+     * {@code care_activity_type} saves and round-trips for valid values.
+     * NULL (default) means not a care-activity reminder — existing rows unaffected.
+     * ASD §1.1: care-activity reminder done → on-device auto-decrement trigger fires.
+     */
+    @Test
+    void careActivityType_nullAndValidValues_roundTrip() {
+        User u = savedUser("reminder-cat1@example.com");
+
+        // NULL = not a care-activity reminder (default)
+        Reminder plain = buildReminder(u.getId(), "custom", "Daily Check");
+        plain = reminders.saveAndFlush(plain);
+        assertThat(plain.getCareActivityType()).isNull();
+
+        // diaper_change
+        Reminder diaper = buildReminder(u.getId(), "custom", "Diaper Change");
+        diaper.setCareActivityType("diaper_change");
+        diaper = reminders.saveAndFlush(diaper);
+        assertThat(diaper.getCareActivityType()).isEqualTo("diaper_change");
+
+        // bathing
+        Reminder bath = buildReminder(u.getId(), "custom", "Evening Bath");
+        bath.setCareActivityType("bathing");
+        bath = reminders.saveAndFlush(bath);
+        assertThat(bath.getCareActivityType()).isEqualTo("bathing");
+    }
+
+    /**
+     * DB {@code CHECK (care_activity_type IN ('diaper_change', 'bathing'))} rejects unknown values.
+     * 'feeding_formula' must NOT be a care_activity_type — formula feeding uses FeedingSession.
+     */
+    @Test
+    void careActivityType_invalidValue_rejectedByDbConstraint() {
+        User u = savedUser("reminder-cat2@example.com");
+        Reminder r = buildReminder(u.getId(), "custom", "Bad Type");
+        r.setCareActivityType("feeding_formula"); // forbidden: formula feeds use FeedingSession
+
+        assertThatThrownBy(() -> {
+            reminders.save(r);
+            reminders.flush();
+        }).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
 }

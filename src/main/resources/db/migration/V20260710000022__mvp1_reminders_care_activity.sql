@@ -1,0 +1,53 @@
+-- mvp1 — reminders: add care_activity_type for auto-stock-decrement diaper/bathing signals.
+-- ASD carry-forward (data-model §3.14 / §5 item 4 / auto-stock-decrement-architecture §1.1 / §9 item 4).
+--
+-- ── PURPOSE ─────────────────────────────────────────────────────────────────────────────────────
+--
+-- Diaper-change and bathing have no dedicated session/log entity.  Their canonical "activity
+-- completed" signal for auto-stock-decrement is the terminal done state of a ReminderOccurrence
+-- whose parent Reminder is tagged with a care_activity_type.
+--
+-- care_activity_type tags the Reminder as a care-activity reminder.  When the mother marks a
+-- linked ReminderOccurrence done (terminal status), the on-device auto-decrement trigger:
+--   1. Checks care_activity_type on the parent Reminder.
+--   2. If set: reads the enabled ConsumptionMapping rows for that activity type.
+--   3. Draws down the linked supply item(s) via the container-holds-N algorithm.
+-- Reminders with care_activity_type IS NULL are inert for stock (auto-stock-decrement §1.1).
+--
+-- ── COLUMN SPEC ─────────────────────────────────────────────────────────────────────────────────
+--
+-- care_activity_type  text NULL  CHECK IN ('diaper_change', 'bathing')
+--   NULL  = not a care-activity reminder (default; all existing reminders unaffected).
+--   'diaper_change' = canonical diaper-change completion signal; gate: general_health.
+--   'bathing'       = canonical bathing completion signal; gate: general_health.
+--   SYNCED: pushed and pulled on change, same LWW as other reminder fields.
+--   Gate: general_health (both diaper_change and bathing are general_health activities, RoPA A17).
+--
+-- ── WHAT IS NOT ADDED ────────────────────────────────────────────────────────────────────────────
+--   No 'feeding_formula' value: formula feeding uses FeedingSession (kind=formula), not a
+--   Reminder (auto-stock-decrement §1.1 — feeding reminder-done is inert for stock).
+--   No new FK to supply_item: Reminder keeps a pure soft link via source_ref_id for the restock
+--   reminder use case; care_activity_type is a self-identifying enum on the reminder row, not a
+--   foreign key or activity linkage column.
+--
+-- ── RETENTION ────────────────────────────────────────────────────────────────────────────────────
+--   Inherits the existing 180-day tombstone GC + per-account DEK purge that already applies to
+--   the reminders table.  No retention change.
+--
+-- ── ADDITIVE / REVERSIBLE ────────────────────────────────────────────────────────────────────────
+--   ADD COLUMN only — nullable (NULL for all existing rows).  No table rewrite.
+--   Rollback: ALTER TABLE reminders DROP COLUMN care_activity_type;
+--
+-- H2 COMPATIBILITY:
+--   One ADD COLUMN per ALTER TABLE (H2 PostgreSQL-mode requirement — see V20260630000011).
+
+ALTER TABLE reminders
+    ADD COLUMN care_activity_type text NULL
+        CHECK (care_activity_type IN ('diaper_change', 'bathing'));
+
+-- No new index added.
+--   care_activity_type is read via the parent Reminder lookup during the on-device trigger
+--   (mobile SQLite, not server query).  On the server, sync/pull for reminders uses the
+--   existing ix_reminders__sync_pull (user_id, updated_at, id) which is unaffected.
+--   At MVP reminder cardinality (a few dozen per user) a partial index on this column would
+--   have near-zero selectivity benefit; revisit if care-activity reminder cardinality grows.

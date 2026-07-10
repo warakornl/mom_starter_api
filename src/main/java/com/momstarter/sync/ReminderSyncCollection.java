@@ -67,6 +67,9 @@ class ReminderSyncCollection implements SyncCollection {
     private static final Set<String> VALID_SOURCE_REF_TYPES = Set.of(
             "medication_plan", "checklist_item", "supply_item");
 
+    /** Valid care_activity_type values (V20260710000022 CHECK constraint). */
+    private static final Set<String> VALID_CARE_ACTIVITY_TYPES = Set.of("diaper_change", "bathing");
+
     /** Valid freq values per FLAG-4 grammar §a (extended with "weekly"). */
     private static final Set<String> VALID_FREQS = Set.of("one_off", "daily", "every_n_days", "weekly");
 
@@ -540,6 +543,15 @@ class ReminderSyncCollection implements SyncCollection {
         r.setActive(activeRaw == null || Boolean.TRUE.equals(activeRaw)
                 || "true".equalsIgnoreCase(String.valueOf(activeRaw)));
 
+        // careActivityType — nullable enum: diaper_change | bathing (ASD §1.1 / V20260710000022)
+        // NOTE: 'feeding_formula' is intentionally absent (formula uses FeedingSession, not Reminder)
+        String careActivityType = extractString(record, "careActivityType");
+        if (careActivityType != null && VALID_CARE_ACTIVITY_TYPES.contains(careActivityType)) {
+            r.setCareActivityType(careActivityType);
+        } else {
+            r.setCareActivityType(null); // unknown/absent → null (safe default)
+        }
+
         String clientIdStr = extractString(record, "clientId");
         if (clientIdStr != null) {
             try { r.setClientId(UUID.fromString(clientIdStr)); } catch (Exception ignored) {}
@@ -587,6 +599,8 @@ class ReminderSyncCollection implements SyncCollection {
         }
         m.put("startAt", r.getStartAt() != null ? r.getStartAt().format(CIVIL_MINUTE_FMT) : null);
         m.put("active", r.isActive());
+        // careActivityType: nullable enum; only emit when non-null (ASD §1.1 / V20260710000022)
+        m.put("careActivityType", r.getCareActivityType());
         m.put("clientId", r.getClientId());
         m.put("version", r.getVersion() != null ? r.getVersion() : 0L);
         m.put("createdAt", r.getCreatedAt());
