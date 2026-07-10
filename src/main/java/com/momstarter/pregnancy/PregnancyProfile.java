@@ -110,6 +110,25 @@ public class PregnancyProfile {
     private byte[] babyNameCipher;
 
     /**
+     * Hospital admission date — {@code bytea} ciphertext (client-encrypted delivery-record PII,
+     * pregnancy-summary-design.md §1.2 Option A). MVP posture: holds plaintext date bytes (no-op
+     * cipher). Real AES-256-GCM lands in the same column at the KMS/EAS milestone (zero schema
+     * change). Nullable — both hospital date fields are optional (pregnancy-summary-design.md §1.1).
+     * Never queried or parsed server-side; only stored and echoed back as Base64.
+     * AAD RULING 2b: recordId = accountId (row-per-account table, RULING 2b).
+     * Crypto-shredded to NULL by {@link PregnancyProfileRepository#shredCiphersByUserId} at T0.
+     */
+    @Column(name = "hospital_admission_date_cipher", columnDefinition = "bytea")
+    private byte[] hospitalAdmissionDateCipher;
+
+    /**
+     * Hospital discharge date — same posture as {@link #hospitalAdmissionDateCipher}.
+     * Nullable; crypto-shredded to NULL at T0 alongside hospitalAdmissionDateCipher.
+     */
+    @Column(name = "hospital_discharge_date_cipher", columnDefinition = "bytea")
+    private byte[] hospitalDischargeDateCipher;
+
+    /**
      * Free-value delivery type (e.g. "vaginal", "cesarean"). Nullable; set at birth event.
      * Stored verbatim, never parsed.
      */
@@ -237,6 +256,22 @@ public class PregnancyProfile {
 
     public void setBabyNameCipher(byte[] babyNameCipher) {
         this.babyNameCipher = babyNameCipher;
+    }
+
+    public byte[] getHospitalAdmissionDateCipher() {
+        return hospitalAdmissionDateCipher;
+    }
+
+    public void setHospitalAdmissionDateCipher(byte[] hospitalAdmissionDateCipher) {
+        this.hospitalAdmissionDateCipher = hospitalAdmissionDateCipher;
+    }
+
+    public byte[] getHospitalDischargeDateCipher() {
+        return hospitalDischargeDateCipher;
+    }
+
+    public void setHospitalDischargeDateCipher(byte[] hospitalDischargeDateCipher) {
+        this.hospitalDischargeDateCipher = hospitalDischargeDateCipher;
     }
 
     public String getDeliveryType() {
