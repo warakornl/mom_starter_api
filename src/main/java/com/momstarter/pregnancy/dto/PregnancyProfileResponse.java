@@ -81,6 +81,22 @@ public record PregnancyProfileResponse(
          */
         String babyName,
 
+        // ---- Hospital-stay cipher fields (client-encrypted Base64, optional/nullable) ----
+
+        /**
+         * Hospital admission date — Base64 ciphertext (client-encrypted, Option A,
+         * pregnancy-summary-design.md §1.2). {@code null} when column is NULL;
+         * excluded from JSON by {@code NON_NULL}. Set via POST /birth-event.
+         * The server never parses or validates this date; temporal logic is client-side.
+         */
+        String hospitalAdmissionDate,
+
+        /**
+         * Hospital discharge date — same posture as {@link #hospitalAdmissionDate}.
+         * {@code null} when column is NULL; excluded from JSON by {@code NON_NULL}.
+         */
+        String hospitalDischargeDate,
+
         // ---- Derived gestational-age snapshot (null when postpartum) ----
 
         /**
@@ -165,6 +181,8 @@ public record PregnancyProfileResponse(
                 toBase64(p.getMotherFirstNameCipher()),
                 toBase64(p.getMotherLastNameCipher()),
                 toBase64(p.getBabyNameCipher()),
+                toBase64(p.getHospitalAdmissionDateCipher()),
+                toBase64(p.getHospitalDischargeDateCipher()),
                 ga.gestationalWeek(),         // int auto-boxed to Integer
                 ga.gestationalDay(),          // int auto-boxed to Integer
                 ga.daysRemaining(),           // long auto-boxed to Long
@@ -205,6 +223,8 @@ public record PregnancyProfileResponse(
                 toBase64(p.getMotherFirstNameCipher()),
                 toBase64(p.getMotherLastNameCipher()),
                 toBase64(p.getBabyNameCipher()),
+                toBase64(p.getHospitalAdmissionDateCipher()),
+                toBase64(p.getHospitalDischargeDateCipher()),
                 null,                        // gestationalWeek — absent for postpartum
                 null,                        // gestationalDay  — absent for postpartum
                 null,                        // daysRemaining   — absent for postpartum
