@@ -36,14 +36,30 @@ public interface PregnancyProfileRepository extends JpaRepository<PregnancyProfi
     Optional<PregnancyProfile> findByUserId(UUID userId);
 
     /**
-     * Per-row cipher-NULL shred for the three name cipher columns (PDPA ม.33 §4.4(A)).
+     * Per-row cipher-NULL shred for ALL cipher columns on {@code pregnancy_profile}
+     * (PDPA ม.33 §4.4(A)).
      *
-     * <p>Sets {@code mother_first_name_cipher}, {@code mother_last_name_cipher}, and
-     * {@code baby_name_cipher} to {@code NULL} for the profile owned by {@code userId}.
-     * This is the DB-side primitive for the per-row crypto-shred that must execute on
-     * the profile tombstone path (the belt-and-suspenders PDPA T0 evidence that the
-     * identity-PII name bytes are explicitly removed from the row before the 180d
-     * hard-purge carries away the tombstone).
+     * <p>Sets ALL five cipher columns to {@code NULL} for the profile owned by
+     * {@code userId}:
+     * <ul>
+     *   <li>{@code mother_first_name_cipher} — identity-PII name (V20260707000018)</li>
+     *   <li>{@code mother_last_name_cipher} — identity-PII name (V20260707000018)</li>
+     *   <li>{@code baby_name_cipher} — identity-PII name (V20260707000018)</li>
+     *   <li>{@code hospital_admission_date_cipher} — delivery-record health date (V20260710000019)</li>
+     *   <li>{@code hospital_discharge_date_cipher} — delivery-record health date (V20260710000019)</li>
+     * </ul>
+     *
+     * <p>This is the DB-side primitive for the per-row crypto-shred that must execute on
+     * the profile tombstone path (the belt-and-suspenders PDPA T0 evidence that all
+     * cipher bytes are explicitly removed from the row before the 180d hard-purge carries
+     * away the tombstone).
+     *
+     * <p>Note: {@code delivery_type_cipher} and {@code birth_note} are written to
+     * {@code pregnancy_profile} but managed by the JPA entity's setter path on the
+     * tombstone (set to {@code null} before {@code deleted_at} is written) — they are
+     * NOT included here because they are mapped entity fields and the service layer nulls
+     * them directly.  These five columns are native-SQL–only targets because
+     * {@code springboot-backend-dev} maps them in a subsequent step.
      *
      * <p><strong>springboot-backend-dev MUST call this method</strong> in the same UPDATE
      * that sets {@code deleted_at} on the profile row (inside a {@code @Transactional}
@@ -51,8 +67,8 @@ public interface PregnancyProfileRepository extends JpaRepository<PregnancyProfi
      * calls {@code plan.setNameCipher(null)} before setting {@code deleted_at}.
      *
      * <p>Uses native SQL so it works independently of JPA entity field mapping
-     * (the entity fields {@code motherFirstNameCipher}, {@code motherLastNameCipher},
-     * {@code babyNameCipher} are added by {@code springboot-backend-dev} in the same slice).
+     * (the entity fields for the five columns are added by {@code springboot-backend-dev}
+     * in the same or a follow-on slice).
      *
      * <p>Idempotent: if the profile row does not exist or the columns are already {@code NULL},
      * the UPDATE is a no-op (0 rows affected).
@@ -65,14 +81,16 @@ public interface PregnancyProfileRepository extends JpaRepository<PregnancyProfi
      * {@link JpaRepository#findById} re-reads from the DB rather than returning stale
      * cached bytes.
      *
-     * @param userId the user whose profile name cipher columns should be nulled
+     * @param userId the user whose profile cipher columns should be nulled
      * @return number of rows updated (0 if no profile exists; 1 if shred was applied)
      */
     @Modifying(clearAutomatically = true)
     @Query(value = "UPDATE pregnancy_profile "
             + "SET mother_first_name_cipher = NULL, "
             +     "mother_last_name_cipher = NULL, "
-            +     "baby_name_cipher = NULL "
+            +     "baby_name_cipher = NULL, "
+            +     "hospital_admission_date_cipher = NULL, "
+            +     "hospital_discharge_date_cipher = NULL "
             + "WHERE user_id = :userId",
             nativeQuery = true)
     int shredCiphersByUserId(@Param("userId") UUID userId);
