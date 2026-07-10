@@ -855,6 +855,52 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.pregnancyProfile.babyName").value("Nong Fah"));
     }
 
+    // -------------------------------------------------------------------------
+    // HOSPITAL-STAY FIELDS — PDPA ม.30 export (hospital-stay slice)
+    // RED until PregnancyProfileExportEntry + AccountExportService.toProfileEntry are updated
+    // -------------------------------------------------------------------------
+
+    /**
+     * When a pregnancy profile has hospital-stay cipher bytes set, the export must include
+     * decrypted hospital date plaintext fields.
+     *
+     * <p>Under the MVP no-op cipher posture (Option A), the raw bytes ARE the UTF-8 plaintext;
+     * the legacy dispatch path in {@link com.momstarter.encryption.FieldEnvelopeDecryptor}
+     * decodes Base64-of-UTF-8 → readable string without a DEK (same as the name fields).
+     *
+     * <p>AAD RULING 2b: collection="pregnancyProfile", recordId=accountId (row-per-account).
+     * RED: fails until PregnancyProfileExportEntry + AccountExportService.toProfileEntry
+     * are extended to include the two hospital-stay fields.
+     */
+    @Test
+    void pregnancyProfileExport_includesDecryptedHospitalStayFields() throws Exception {
+        PregnancyProfile profile = new PregnancyProfile();
+        profile.setUserId(userA.getId());
+        profile.setEdd(java.time.LocalDate.of(2027, 1, 15));
+        profile.setEddBasis("due_date");
+        // MVP no-op cipher: store raw UTF-8 date strings as cipher bytes
+        profile.setHospitalAdmissionDateCipher(
+                "2027-01-10".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        profile.setHospitalDischargeDateCipher(
+                "2027-01-13".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        profiles.saveAndFlush(profile);
+
+        String body = mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pregnancyProfile").exists())
+                .andExpect(jsonPath("$.pregnancyProfile.hospitalAdmissionDate").value("2027-01-10"))
+                .andExpect(jsonPath("$.pregnancyProfile.hospitalDischargeDate").value("2027-01-13"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        // Raw cipher key names must never appear in the export (only decrypted strings)
+        org.assertj.core.api.Assertions.assertThat(body)
+                .doesNotContain("hospitalAdmissionDateCipher")
+                .doesNotContain("hospitalDischargeDateCipher");
+    }
+
     /**
      * When name cipher columns are NULL (never set or crypto-shredded), the export must
      * include the pregnancy profile with null / absent name fields (no NPE thrown).

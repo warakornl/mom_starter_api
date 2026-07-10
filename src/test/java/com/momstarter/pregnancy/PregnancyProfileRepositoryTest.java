@@ -183,4 +183,63 @@ class PregnancyProfileRepositoryTest {
                 .as("babyNameCipher must be NULL after shred")
                 .isNull();
     }
+
+    // -------------------------------------------------------------------------
+    // Hospital-stay cipher field tests (hospital-stay slice)
+    // RED: will fail until PregnancyProfile gains hospitalAdmissionDateCipher / hospitalDischargeDateCipher
+    // -------------------------------------------------------------------------
+
+    /**
+     * Entity hospital-stay cipher fields can be set to non-null bytes and read back (round-trip via H2).
+     * RED: will fail until PregnancyProfile has the 2 bytea hospital fields.
+     */
+    @Test
+    void hospitalCipherFields_setAndRead_roundTrip() {
+        User u = savedUser("mom7@example.com");
+        PregnancyProfile p = buildProfile(u.getId(), LocalDate.of(2027, 10, 1), "due_date");
+        // MVP posture: raw UTF-8 civil-date bytes stored verbatim (no-op cipher)
+        p.setHospitalAdmissionDateCipher("2027-09-28".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        p.setHospitalDischargeDateCipher("2027-10-01".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        profiles.saveAndFlush(p);
+
+        PregnancyProfile found = profiles.findByUserId(u.getId()).orElseThrow();
+        assertThat(found.getHospitalAdmissionDateCipher())
+                .as("hospitalAdmissionDateCipher round-trip")
+                .isEqualTo("2027-09-28".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(found.getHospitalDischargeDateCipher())
+                .as("hospitalDischargeDateCipher round-trip")
+                .isEqualTo("2027-10-01".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * shredCiphersByUserId NULLs ALL FIVE cipher columns (3 name + 2 hospital-stay) on H2
+     * (PDPA ม.33 belt-and-suspenders shred; real Postgres covered by PgSmokeTest).
+     * RED: will fail until PregnancyProfile has all 5 entity fields.
+     */
+    @Test
+    void shredCiphersByUserId_H2_nullsAllFiveCiphers() {
+        User u = savedUser("mom8@example.com");
+        PregnancyProfile p = buildProfile(u.getId(), LocalDate.of(2027, 11, 1), "due_date");
+        p.setMotherFirstNameCipher(new byte[]{0x41});  // "A"
+        p.setMotherLastNameCipher(new byte[]{0x42});   // "B"
+        p.setBabyNameCipher(new byte[]{0x43});          // "C"
+        p.setHospitalAdmissionDateCipher(new byte[]{0x44}); // "D"
+        p.setHospitalDischargeDateCipher(new byte[]{0x45}); // "E"
+        profiles.saveAndFlush(p);
+
+        int shredded = profiles.shredCiphersByUserId(u.getId());
+        assertThat(shredded).as("shred must affect exactly 1 row").isEqualTo(1);
+
+        PregnancyProfile after = profiles.findByUserId(u.getId()).orElseThrow();
+        assertThat(after.getMotherFirstNameCipher())
+                .as("motherFirstNameCipher must be NULL after shred").isNull();
+        assertThat(after.getMotherLastNameCipher())
+                .as("motherLastNameCipher must be NULL after shred").isNull();
+        assertThat(after.getBabyNameCipher())
+                .as("babyNameCipher must be NULL after shred").isNull();
+        assertThat(after.getHospitalAdmissionDateCipher())
+                .as("hospitalAdmissionDateCipher must be NULL after shred").isNull();
+        assertThat(after.getHospitalDischargeDateCipher())
+                .as("hospitalDischargeDateCipher must be NULL after shred").isNull();
+    }
 }
