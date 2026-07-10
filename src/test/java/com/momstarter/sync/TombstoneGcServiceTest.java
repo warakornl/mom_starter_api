@@ -2,6 +2,10 @@ package com.momstarter.sync;
 
 import com.momstarter.account.User;
 import com.momstarter.account.UserRepository;
+import com.momstarter.consumption.ConsumptionMapping;
+import com.momstarter.consumption.ConsumptionMappingRepository;
+import com.momstarter.feeding.FeedingSession;
+import com.momstarter.feeding.FeedingSessionRepository;
 import com.momstarter.kickcount.KickCountSession;
 import com.momstarter.kickcount.KickCountSessionRepository;
 import com.momstarter.medication.MedicationLog;
@@ -69,6 +73,8 @@ class TombstoneGcServiceTest {
     @Autowired private SupplyItemRepository supplyItems;
     @Autowired private PregnancyProfileRepository profiles;
     @Autowired private UserRepository users;
+    @Autowired private FeedingSessionRepository feedingSessions;
+    @Autowired private ConsumptionMappingRepository consumptionMappings;
 
     // -------------------------------------------------------------------------
     // kick_count_session is in the enumerated purge-table list
@@ -97,9 +103,11 @@ class TombstoneGcServiceTest {
                 "kick_count_session",
                 "pregnancy_profile",
                 "expenses",
-                "self_log",          // F2 fix: self_log tombstones must be hard-purged (PDPA ม.33)
-                "medication_log",    // Task 5: SD-2 health data — note_cipher shredded on tombstone
-                "medication_plan"    // Task 5: SD-2 health data — name/dose ciphers shredded on tombstone
+                "self_log",             // F2 fix: self_log tombstones must be hard-purged (PDPA ม.33)
+                "medication_log",       // Task 5: SD-2 health data — note_cipher shredded on tombstone
+                "medication_plan",      // Task 5: SD-2 health data — name/dose ciphers shredded on tombstone
+                "feeding_session",      // ASD: SD-10 health data; note_cipher shredded on tombstone
+                "consumption_mapping"   // ASD: health-correlate data (INV-ASD-9); rows purged by GC
         );
     }
 
@@ -536,5 +544,112 @@ class TombstoneGcServiceTest {
         l.setOccurrenceTime(LocalDateTime.of(2026, 7, 1, 9, 0));
         l.setNoteCipher(new byte[]{4, 5, 6});   // will be null-shredded on tombstone
         return l;
+    }
+
+    // -------------------------------------------------------------------------
+    // ASD: feeding_session tombstone GC
+    // -------------------------------------------------------------------------
+
+    @Test
+    void purgeTableNames_enumeratesFeedingSession() {
+        assertThat(gcService.purgeTableNames()).contains("feeding_session");
+    }
+
+    @Test
+    void purge_feedingSession_oldTombstone_purged() {
+        User user = savedUser("gc-fs-1@example.com");
+        FeedingSession s = buildFeedingSession(user.getId());
+        s.setDeletedAt(Instant.now().minus(181, ChronoUnit.DAYS));
+        em.persistAndFlush(s);
+        em.clear();
+
+        int purged = gcService.purgeExpiredTombstones(180);
+
+        assertThat(purged).isGreaterThanOrEqualTo(1);
+        assertThat(feedingSessions.findById(s.getId())).isEmpty();
+    }
+
+    @Test
+    void purge_feedingSession_recentTombstone_retained() {
+        User user = savedUser("gc-fs-2@example.com");
+        FeedingSession s = buildFeedingSession(user.getId());
+        s.setDeletedAt(Instant.now().minus(10, ChronoUnit.DAYS));
+        em.persistAndFlush(s);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(feedingSessions.findById(s.getId())).isPresent();
+    }
+
+    @Test
+    void purge_feedingSession_liveRow_notTouched() {
+        User user = savedUser("gc-fs-3@example.com");
+        FeedingSession s = buildFeedingSession(user.getId());
+        // deletedAt = null — live row
+        em.persistAndFlush(s);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(feedingSessions.findById(s.getId())).isPresent();
+    }
+
+    // -------------------------------------------------------------------------
+    // ASD: consumption_mapping tombstone GC
+    // -------------------------------------------------------------------------
+
+    @Test
+    void purgeTableNames_enumeratesConsumptionMapping() {
+        assertThat(gcService.purgeTableNames()).contains("consumption_mapping");
+    }
+
+    @Test
+    void purge_consumptionMapping_oldTombstone_purged() {
+        User user = savedUser("gc-cm-1@example.com");
+        ConsumptionMapping m = buildConsumptionMapping(user.getId());
+        m.setDeletedAt(Instant.now().minus(181, ChronoUnit.DAYS));
+        em.persistAndFlush(m);
+        em.clear();
+
+        int purged = gcService.purgeExpiredTombstones(180);
+
+        assertThat(purged).isGreaterThanOrEqualTo(1);
+        assertThat(consumptionMappings.findById(m.getId())).isEmpty();
+    }
+
+    @Test
+    void purge_consumptionMapping_liveRow_notTouched() {
+        User user = savedUser("gc-cm-2@example.com");
+        ConsumptionMapping m = buildConsumptionMapping(user.getId());
+        em.persistAndFlush(m);
+        em.clear();
+
+        gcService.purgeExpiredTombstones(180);
+
+        assertThat(consumptionMappings.findById(m.getId())).isPresent();
+    }
+
+    // -------------------------------------------------------------------------
+    // Builders
+    // -------------------------------------------------------------------------
+
+    private FeedingSession buildFeedingSession(UUID userId) {
+        FeedingSession s = new FeedingSession();
+        s.setId(UUID.randomUUID());
+        s.setUserId(userId);
+        s.setKind("formula");
+        s.setStartedAt(LocalDateTime.of(2026, 7, 10, 8, 0));
+        return s;
+    }
+
+    private ConsumptionMapping buildConsumptionMapping(UUID userId) {
+        ConsumptionMapping m = new ConsumptionMapping();
+        m.setId(UUID.randomUUID());
+        m.setUserId(userId);
+        m.setActivityType("diaper_change");
+        m.setDefaultQty(1);
+        m.setEnabled(true);
+        return m;
     }
 }

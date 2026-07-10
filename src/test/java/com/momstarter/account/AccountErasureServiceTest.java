@@ -24,6 +24,10 @@ import com.momstarter.reminder.ReminderOccurrenceRepository;
 import com.momstarter.reminder.ReminderRepository;
 import com.momstarter.expense.Expense;
 import com.momstarter.expense.ExpenseRepository;
+import com.momstarter.consumption.ConsumptionMapping;
+import com.momstarter.consumption.ConsumptionMappingRepository;
+import com.momstarter.feeding.FeedingSession;
+import com.momstarter.feeding.FeedingSessionRepository;
 import com.momstarter.medication.MedicationLog;
 import com.momstarter.medication.MedicationLogRepository;
 import com.momstarter.medication.MedicationPlan;
@@ -121,6 +125,8 @@ class AccountErasureServiceTest {
     @Autowired private MedicationPlanRepository medicationPlans;
     @Autowired private MedicationLogRepository medicationLogs;
     @Autowired private AccountDekRepository accountDekRepository;
+    @Autowired private FeedingSessionRepository feedingSessionRepo;
+    @Autowired private ConsumptionMappingRepository consumptionMappingRepo;
 
     // =========================================================================
     // TIER-1: purgeExpiredAccountChildren
@@ -155,7 +161,8 @@ class AccountErasureServiceTest {
         UUID userId = persistSoftDeletedUser("tier1-cascade@example.com",
                 Instant.now().minus(181, ChronoUnit.DAYS));
 
-        // Seed every Tier-1 child table (15 tables, incl. account_dek, self_log, medication_*)
+        // Seed every Tier-1 child table (17 tables, incl. account_dek, self_log, medication_*,
+        // feeding_session, consumption_mapping — ASD additions)
         UUID dekId          = persistAccountDek(userId);   // crypto-shred backstop (sub-slice c)
         UUID profileId      = persistPregnancyProfile(userId);
         UUID authId         = persistAuthIdentity(userId);
@@ -172,6 +179,9 @@ class AccountErasureServiceTest {
         UUID planId         = persistMedicationPlan(userId);
         // medication_log FK → medication_plan; must be deleted before the plan in Tier-1
         UUID medLogId       = persistMedicationLog(userId, planId);
+        // ASD additions: feeding_session + consumption_mapping (V20260710000020/0023)
+        UUID feedingId      = persistFeedingSession(userId);
+        UUID cmId           = persistConsumptionMapping(userId);
 
         // Also persist a consent_record — it must NOT be deleted by Tier-1
         UUID consentId = persistConsentRecord(userId);
@@ -209,6 +219,12 @@ class AccountErasureServiceTest {
                 .isEmpty();
         assertThat(medicationPlans.findById(planId))
                 .as("medication_plan — must be purged by Tier-1 (RULING 4 / FK → users)")
+                .isEmpty();
+        assertThat(feedingSessionRepo.findById(feedingId))
+                .as("feeding_session (ASD) — SD-10 health data; must be purged by Tier-1")
+                .isEmpty();
+        assertThat(consumptionMappingRepo.findById(cmId))
+                .as("consumption_mapping (ASD) — health-correlate data (INV-ASD-9); must be purged by Tier-1")
                 .isEmpty();
 
         // users row MUST be retained — it is the FK anchor until Tier-2 runs
@@ -599,5 +615,32 @@ class AccountErasureServiceTest {
         l.setStatus("taken");
         l.setOccurrenceTime(LocalDateTime.of(2026, 7, 1, 9, 0));
         return em.persistAndFlush(l).getId();
+    }
+
+    /**
+     * Persists a feeding_session row (ASD — V20260710000020).
+     * FK → users(id) ON DELETE RESTRICT. Purged by Tier-1 (PDPA ม.33 / pdpa-assessment ruling 5).
+     */
+    private UUID persistFeedingSession(UUID userId) {
+        FeedingSession s = new FeedingSession();
+        s.setId(UUID.randomUUID());
+        s.setUserId(userId);
+        s.setKind("formula");
+        s.setStartedAt(LocalDateTime.of(2026, 7, 10, 8, 0));
+        return em.persistAndFlush(s).getId();
+    }
+
+    /**
+     * Persists a consumption_mapping row (ASD — V20260710000023).
+     * FK → users(id) ON DELETE RESTRICT. Purged by Tier-1 (INV-ASD-9 / PDPA ม.33).
+     */
+    private UUID persistConsumptionMapping(UUID userId) {
+        ConsumptionMapping m = new ConsumptionMapping();
+        m.setId(UUID.randomUUID());
+        m.setUserId(userId);
+        m.setActivityType("diaper_change");
+        m.setDefaultQty(1);
+        m.setEnabled(true);
+        return em.persistAndFlush(m).getId();
     }
 }

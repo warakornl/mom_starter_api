@@ -11,6 +11,13 @@ spring:
       ddl-auto: none
   flyway:
     enabled: false
+    # Explicitly restrict to db/migration (H2-compatible scripts only).
+    # db/pg-only (PL/pgSQL trigger V20260710000024) is excluded — H2 cannot execute it.
+    # @DataJpaTest slices that enable Flyway explicitly will inherit this locations value,
+    # ensuring they never attempt to run PL/pgSQL scripts against H2.
+    # INV-ASD-8 is still fully asserted on H2 via column-absence and sync-apply e2e tests
+    # (see V20260710000024 PRIMARY CONTROL comment); the trigger is DB-layer defense-in-depth.
+    locations: classpath:db/migration
 
 # Effectively disable rate limiting in the test profile so MVC tests don't trip the
 # shared in-memory limiter; the limiter itself is unit-tested in RateLimiterTest.

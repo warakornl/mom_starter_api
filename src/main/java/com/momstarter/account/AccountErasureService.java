@@ -110,8 +110,17 @@ public class AccountErasureService {
                                          // MUST come BEFORE medication_plan (RULING 4):
                                          // medication_log.medication_plan_id REFERENCES medication_plan(id).
                                          // Deleting medication_plan first would FK-violate surviving log rows.
-            "medication_plan"            // FK → users; SD-2 health data.
+            "medication_plan",           // FK → users; SD-2 health data.
                                          // Must come AFTER medication_log (see above) and BEFORE users.
+            // ASD additions (V20260710000020-0023):
+            "feeding_session",           // FK → users; SD-10 health data (infant_feeding ม.26).
+                                         // note_cipher is crypto-shredded on tombstone.
+                                         // No FK dependency on consumption_mapping — can be in any
+                                         // relative order with consumption_mapping.
+            "consumption_mapping"        // FK → users; health-correlate data (INV-ASD-9).
+                                         // No *_cipher columns — no per-row crypto-shred sub-step.
+                                         // supply_item_id is a SOFT REF (no FK) — purge is safe
+                                         // regardless of supply_items row existence.
     );
 
     private final JdbcTemplate jdbc;

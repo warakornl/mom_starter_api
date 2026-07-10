@@ -16,6 +16,9 @@ spring:
     open-in-view: false
   flyway:
     enabled: true
+    # db/migration : H2-compatible DDL (all profiles).
+    # db/pg-only   : PostgreSQL-only scripts (PL/pgSQL triggers etc.) excluded from H2 tests.
+    locations: classpath:db/migration,classpath:db/pg-only
 
 # Per-IP rate limits (requests / minute). Conservative MVP values — tighten + back with a
 # shared store / edge WAF for production (see docs/architecture/infrastructure-diagram.md).

@@ -74,10 +74,20 @@ public class TombstoneGcService {
                                        // (PDPA ม.33). Listed before medication_plan in PURGE_TABLES
                                        // for consistency with TIER1_CHILD_DELETE_ORDER FK order,
                                        // though the GC DELETE is per-table and FK-independent.
-            "medication_plan"          // Slice 2 Task 5: SD-2 health data — medication schedules.
+            "medication_plan",         // Slice 2 Task 5: SD-2 health data — medication schedules.
                                        // nameCipher + doseCipher are crypto-shredded on tombstone
                                        // (§4.4(A)). GC ensures tombstoned plans are hard-purged
                                        // after 180 days (PDPA ม.33).
+            // ASD additions (V20260710000020-0023):
+            "feeding_session",         // SD-10 health data (infant_feeding ม.26).
+                                       // note_cipher is crypto-shredded on tombstone.
+                                       // 180-day tombstone GC (A5/A16 retention window per
+                                       // PDPA ม.33 / pdpa-assessment ruling 5).
+            "consumption_mapping"      // Health-correlate data (INV-ASD-9).
+                                       // No *_cipher columns — no per-row crypto-shred.
+                                       // 180-day tombstone GC (A17 general_health window;
+                                       // both diaper_change/bathing and feeding_formula align
+                                       // at 180d — no per-row differentiated GC needed).
     );
 
     private final JdbcTemplate jdbc;

@@ -10,6 +10,8 @@ spring:
       ddl-auto: none
   flyway:
     enabled: true
+    # Include pg-only (PL/pgSQL triggers) on real PostgreSQL — same as application.yml.
+    locations: classpath:db/migration,classpath:db/pg-only
 momstarter:
   ratelimit:
     login-per-ip-per-min: 50      # high enough to let the per-account lockout (10) demo run first

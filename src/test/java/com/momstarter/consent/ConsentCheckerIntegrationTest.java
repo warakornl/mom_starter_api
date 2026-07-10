@@ -60,6 +60,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.datasource.password=",
         "spring.jpa.hibernate.ddl-auto=none",
         "spring.flyway.enabled=true",
+        // H2 compatibility: restrict Flyway to db/migration only (db/pg-only contains PL/pgSQL
+        // trigger V20260710000024 which H2 cannot execute — same exclusion as application-test.yml)
+        "spring.flyway.locations=classpath:db/migration",
         // Disable rate limiting so tests are not throttled
         "momstarter.ratelimit.login-per-ip-per-min=1000000",
         "momstarter.ratelimit.register-per-ip-per-min=1000000",
