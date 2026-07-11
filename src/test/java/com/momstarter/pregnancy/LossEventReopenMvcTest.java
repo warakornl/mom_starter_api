@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.context.ApplicationContext;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
@@ -74,6 +75,8 @@ class LossEventReopenMvcTest {
     private ReminderRepository reminders;
     @Autowired
     private JwtService jwtService;
+    @Autowired
+    private ApplicationContext applicationContext;
 
     @MockBean
     private ConsentChecker consentChecker;
@@ -653,15 +656,23 @@ class LossEventReopenMvcTest {
     }
 
     // =========================================================================
-    // Fail-on-revert — LOSS-INV-3 atomic rollback
+    // Joint post-commit state — LOSS-INV-3 (companion to the REAL fail-on-revert
+    // rollback test, which lives in the separate LossEventAtomicRollbackTest class
+    // because it requires @MockBean ReminderRepository + a non-@Transactional test
+    // class so the service's own transaction commits/rolls back independently —
+    // see LossEventAtomicRollbackTest's Javadoc for why that had to be a dedicated
+    // class rather than a method here).
     // =========================================================================
 
     @Test
-    void lossEvent_transactionIsAtomic_profileAndReminderMutateTogetherOrNotAtAll() throws Exception {
-        // This test documents/guards LOSS-INV-3 by asserting the POST-commit joint state:
-        // a successful response implies BOTH the profile flip AND the reminder sweep landed,
-        // read back from a FRESH repository query (not the same persistence-context instance
-        // the service used) - guards against a partial/faked "atomicity" (in-memory map, etc.)
+    void lossEvent_pregnantToEnded_bothProfileAndReminderMutateOnSuccess() throws Exception {
+        // This test asserts the POST-commit joint state on the SUCCESS path only: a successful
+        // response implies BOTH the profile flip AND the reminder sweep landed, read back from
+        // a fresh repository query. It does NOT inject a failure and therefore does NOT prove
+        // rollback-on-failure by itself — that fail-on-revert evidence is
+        // LossEventAtomicRollbackTest#lossEvent_sweepThrows_wholeTransactionRollsBack_profileStaysPregnant,
+        // which mocks ReminderRepository to throw mid-transaction and asserts the profile stays
+        // "pregnant" (real Spring-managed rollback, not a partial/faked atomicity).
         createPregnantProfile();
         Reminder swept = reminders.saveAndFlush(buildReminder(false));
 
@@ -679,7 +690,7 @@ class LossEventReopenMvcTest {
         assertThat(p.getLifecycle()).isEqualTo("ended");
         assertThat(r.isActive()).isFalse();
         assertThat(r.getDeactivatedBy()).isEqualTo("loss_event");
-        // Both mutated together: this is the atomicity invariant's observable signature.
+        // Both mutated together on the success path: this is the joint-commit signature.
     }
 
     // =========================================================================
@@ -688,12 +699,15 @@ class LossEventReopenMvcTest {
 
     @Test
     void lossEvent_emitsNoPushNotification_reminderRowsAreOnlyEffect() throws Exception {
-        // There is no server-side push/notification channel in this codebase (grep-verified:
-        // no NotificationService/PushSender bean exists). The ENTIRE side-effect surface of
-        // loss-event is the reminder row sweep (which rides sync/pull to devices; the RN client
-        // owns cancellation). This test is the fail-on-revert guard: if a push channel is EVER
-        // introduced, this test's bean-count assertion below will force an explicit review of
-        // this exact invariant (BLOCKER-LOSS-PUSH / LOSS-INV-9) before it can be wired in here.
+        // This test asserts exactly two things: (1) the ApplicationContext for this whole test
+        // class contains NO bean whose type name suggests a push/notification sender (a
+        // fail-on-revert tripwire — if such a bean is EVER introduced, the assertion below
+        // fails and forces an explicit BLOCKER-LOSS-PUSH/LOSS-INV-9 review before it can be
+        // wired into the loss-event path); and (2) the reminder's `active` flag is the row-level
+        // effect actually produced by this call. It does NOT invoke any mocking/verification
+        // framework to prove push=0 in a running system with a real push provider configured —
+        // there is no such provider in this codebase today, so that stronger guarantee is moot
+        // until one exists (at which point this test's bean-scan will force a review).
         createPregnantProfile();
         Reminder r = reminders.saveAndFlush(buildReminder(false));
 
@@ -704,9 +718,24 @@ class LossEventReopenMvcTest {
                         .content("{}"))
                 .andExpect(status().isOk());
 
-        // No notification/push table or side-channel exists; the reminder's `active` flag
-        // (server-side authoritative deactivation) is the ONLY signal produced. Assert exactly
-        // this and nothing more.
+        // (1) Real bean-count assertion — no push/notification-sender bean exists anywhere in
+        // the application context. This is the actual, checkable fail-on-revert tripwire.
+        String[] suspiciousBeanNames = applicationContext.getBeanNamesForType(Object.class);
+        java.util.List<String> pushLikeBeans = java.util.Arrays.stream(suspiciousBeanNames)
+                .filter(name -> {
+                    String lower = name.toLowerCase(java.util.Locale.ROOT);
+                    return lower.contains("pushsender") || lower.contains("pushnotification")
+                            || lower.contains("notificationsender") || lower.contains("fcmclient")
+                            || lower.contains("apnsclient");
+                })
+                .toList();
+        assertThat(pushLikeBeans)
+                .as("no push/notification-sender bean may exist in the context (BLOCKER-LOSS-PUSH); "
+                        + "if this fails, a push channel was introduced and MUST be reviewed against "
+                        + "LOSS-INV-9 before the loss-event path is allowed to call it")
+                .isEmpty();
+
+        // (2) The reminder row-level effect actually produced by this call.
         Reminder reloaded = reminders.findById(r.getId()).orElseThrow();
         assertThat(reloaded.isActive()).isFalse();
     }
