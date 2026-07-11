@@ -15,7 +15,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.dao.DataIntegrityViolationException;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Repository-layer tests for {@link ConsentRecord} / {@link ConsentRecordRepository}.
@@ -232,6 +235,57 @@ class ConsentRecordRepositoryTest {
 
         assertThat(pageA).hasSize(1);
         assertThat(pageA.get(0).getUserId()).isEqualTo(userA.getId());
+    }
+
+    // -------------------------------------------------------------------------
+    // calendar_sync — 7th consent type (V20260711000025)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Asserts that {@code calendar_sync} is accepted by the CHECK constraint after migration
+     * V20260711000025 widens the IN-list from 6 to 7 values.
+     *
+     * <p>This test is the TDD gate for the CHECK-widening migration:
+     * if V20260711000025 did not run (or ran incorrectly), inserting {@code calendar_sync}
+     * would throw a {@code DataIntegrityViolationException} and this test would fail.
+     *
+     * <p>PDPA basis: {@code calendar_sync} (ม.26 explicit consent) for writing ANC appointment
+     * data to the device-native calendar — approved by {@code compliance-reviewer} per
+     * {@code docs/compliance/calendar-sync-pdpa.md §1.1}.
+     */
+    @Test
+    void calendarSync_insertsSuccessfully() {
+        User user = savedUser("consent-repo-calsync-1@example.com");
+        consentRecords.save(buildRecord(user.getId(), "calendar_sync", true));
+        consentRecords.flush();
+
+        assertThat(consentRecords.findLatestGranted(user.getId(), "calendar_sync"))
+                .as("calendar_sync granted row should be retrievable after migration V20260711000025")
+                .contains(true);
+    }
+
+    /**
+     * Asserts that a completely invalid consent type is rejected by the CHECK constraint.
+     *
+     * <p>Verifies that the widened 7-value constraint still rejects values outside the
+     * known set (not just the original 6).  An IN-list CHECK that was accidentally widened
+     * to {@code IN ('general_health', ...)} without the {@code NOT NULL} or with a
+     * catch-all would silently accept garbage; this test guards against that.
+     *
+     * <p>H2 throws {@code JdbcSQLIntegrityConstraintViolationException} on CHECK violation;
+     * Spring Data JPA wraps it as {@code DataIntegrityViolationException}.
+     */
+    @Test
+    void invalidConsentType_isRejectedByCheckConstraint() {
+        User user = savedUser("consent-repo-invalid-type-1@example.com");
+        ConsentRecord r = buildRecord(user.getId(), "not_a_valid_consent_type", true);
+
+        assertThatThrownBy(() -> {
+            consentRecords.save(r);
+            consentRecords.flush();
+        })
+                .as("A consent_type value outside the 7-value IN-list must be rejected by the CHECK constraint")
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     // -------------------------------------------------------------------------
