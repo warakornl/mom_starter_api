@@ -533,6 +533,65 @@ class AccountExportMvcTest {
                 .andExpect(jsonPath("$.reminders[0].displayTitle").value("Take vitamins"));
     }
 
+    // =========================================================================
+    // S2 negative test — pregnancy-loss export (PDPA ม.30/31, LOSS-INV-4/8,
+    // pregnancy-loss-recording-functional-spec.md §7.3/§7.7, review item (1))
+    // =========================================================================
+
+    /**
+     * Export at {@code lifecycle="ended"} MUST NOT be gated by lifecycle (LOSS-INV-8/AC-3.2) —
+     * asserts (a) no 4xx caused by lifecycle, and (b) the payload carries {@code lossDate} AND
+     * the reversibly-deactivated reminder with its tombstone-provenance fields intact
+     * (AC-3.3 — export includes retained/deactivated reminders, not just live ones).
+     *
+     * <p>This is the S2 negative-test hard-lock: if a future change ever adds a lifecycle
+     * gate to export, or drops the loss/tombstone fields from the export DTOs, this test fails.
+     */
+    @Test
+    void pregnancyLossExport_endedLifecycle_notGated_includesLossDateAndDeactivatedReminder()
+            throws Exception {
+        PregnancyProfile profile = new PregnancyProfile();
+        profile.setUserId(userA.getId());
+        profile.setEdd(LocalDate.of(2027, 1, 15));
+        profile.setEddBasis("due_date");
+        profile.setLifecycle("ended");
+        profile.setLossDate(LocalDate.of(2026, 6, 20));
+        profiles.saveAndFlush(profile);
+
+        Reminder swept = buildReminder(userA.getId(), "Kick count reminder");
+        swept.setActive(false);
+        swept.setDeactivatedBy("loss_event");
+        swept.setDeactivatedAt(Instant.parse("2026-06-20T10:00:00Z"));
+        reminders.saveAndFlush(swept);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                // (a) no 4xx because of lifecycle — export is UNGATED at any lifecycle (LOSS-INV-8)
+                .andExpect(status().isOk())
+                // (b) payload carries lossDate + the reversible tombstone fields
+                .andExpect(jsonPath("$.pregnancyProfile.lifecycle").value("ended"))
+                .andExpect(jsonPath("$.pregnancyProfile.lossDate").value("2026-06-20"))
+                .andExpect(jsonPath("$.reminders.length()").value(1))
+                .andExpect(jsonPath("$.reminders[0].active").value(false))
+                .andExpect(jsonPath("$.reminders[0].survivesEnded").value(false))
+                .andExpect(jsonPath("$.reminders[0].deactivatedBy").value("loss_event"))
+                .andExpect(jsonPath("$.reminders[0].deactivatedAt").exists());
+    }
+
+    @Test
+    void pregnancyLossExport_noLossDate_fieldAbsentFromJson() throws Exception {
+        PregnancyProfile profile = new PregnancyProfile();
+        profile.setUserId(userA.getId());
+        profile.setEdd(LocalDate.of(2027, 1, 15));
+        profile.setEddBasis("due_date");
+        profiles.saveAndFlush(profile);
+
+        mvc.perform(get("/account/export")
+                        .header("Authorization", bearerA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pregnancyProfile.lossDate").doesNotExist());
+    }
+
     @Test
     void reminderOccurrencesIncluded() throws Exception {
         Reminder reminder = buildReminder(userA.getId(), "Medication");

@@ -31,6 +31,17 @@ public record PregnancyProfileExportEntry(
         String eddBasis,
         String lifecycle,
         LocalDate birthDate,
+        /**
+         * Floating-civil loss date (data-model §5 "Pregnancy-loss lifecycle transition" L275).
+         * {@code null} unless {@code lifecycle = "ended"} and the mother chose to record a date
+         * (OPTIONAL/skippable, LOSS-INV-11). <strong>Plaintext</strong> — NOT decrypted (it was
+         * never encrypted; same posture as {@code edd}/{@code birthDate}, data-model L511).
+         *
+         * <p>Export is <strong>NOT</strong> lifecycle-gated (LOSS-INV-8/AC-3.2/AC-3.3) — this
+         * field is present in the export at {@code lifecycle="ended"} exactly like every other
+         * field, with no special-case suppression.
+         */
+        LocalDate lossDate,
         String deliveryType,
         String birthNote,
         /**

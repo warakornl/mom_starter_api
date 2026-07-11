@@ -304,6 +304,7 @@ public class AccountExportService {
                         r.getId(), r.getType(), r.getDisplayTitle(),
                         r.getSourceRefType(), r.getSourceRefId(),
                         r.getRecurrenceRule(), r.getStartAt(), r.isActive(),
+                        r.isSurvivesEnded(), r.getDeactivatedBy(), r.getDeactivatedAt(),
                         r.getCreatedAt(), r.getUpdatedAt(), r.getDeletedAt()))
                 .toList();
 
@@ -449,7 +450,7 @@ public class AccountExportService {
                                                         byte[] dek, String accountIdStr) {
         return new PregnancyProfileExportEntry(
                 p.getId(), p.getEdd(), p.getEddBasis(), p.getLifecycle(),
-                p.getBirthDate(), p.getDeliveryType(), p.getBirthNote(),
+                p.getBirthDate(), p.getLossDate(), p.getDeliveryType(), p.getBirthNote(),
                 dispatchDecrypt(p.getMotherFirstNameCipher(), dek,
                         new FieldAad(accountIdStr, COLL_PREGNANCY_PROFILE,
                                 accountIdStr, FIELD_PP_MOTHER_FIRST_NAME)),
