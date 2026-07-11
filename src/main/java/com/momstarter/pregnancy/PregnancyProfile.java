@@ -84,6 +84,29 @@ public class PregnancyProfile {
     private LocalDate birthDate;
 
     /**
+     * Floating-civil loss date (zoneless {@code YYYY-MM-DD} — FLAG-1 / data-model §5 "Pregnancy-loss
+     * lifecycle transition &amp; reminder tombstones" L275). {@code null} unless
+     * {@code lifecycle = "ended"} and the mother chose to record a date (OPTIONAL/skippable —
+     * the system needs only {@code lifecycle='ended'} to stop content/push).
+     *
+     * <p>Set by {@code POST /pregnancy-profile/loss-event}; cleared to {@code null} in the
+     * <strong>same transaction</strong> as {@code POST /pregnancy-profile/reopen} (S4/ม.35/ม.36 —
+     * a stale loss date on a now-{@code pregnant} profile is inaccurate and purpose-less).
+     *
+     * <p>PDPA: <strong>plaintext</strong> — NOT on the encrypted-column list (data-model L511 /
+     * pdpa-assessment S6: date-only, no time-of-day, no metadata). {@code lifecycle}/{@code
+     * lossDate} must never enter any ad/product/targeting query (LOSS-INV-10 / L-15.7 / Z-8 —
+     * permanent lock).
+     *
+     * <p>Java {@link LocalDate} maps to DB {@code date} (no time, no timezone). No DB CHECK for
+     * bounds — validation ({@code loss_date_range} / {@code loss_date_malformed}) is
+     * application-layer, relative to the client civil "today" and {@code edd}, same posture as
+     * {@link #birthDate}.
+     */
+    @Column(name = "loss_date")
+    private LocalDate lossDate;
+
+    /**
      * Mother's first name — {@code bytea} ciphertext (client-encrypted identity PII,
      * name-fields-design.md Option A). MVP posture: holds plaintext bytes (no-op cipher).
      * Real AES-256-GCM lands in the same column at the KMS/EAS milestone (zero schema change).
@@ -232,6 +255,14 @@ public class PregnancyProfile {
 
     public void setBirthDate(LocalDate birthDate) {
         this.birthDate = birthDate;
+    }
+
+    public LocalDate getLossDate() {
+        return lossDate;
+    }
+
+    public void setLossDate(LocalDate lossDate) {
+        this.lossDate = lossDate;
     }
 
     public byte[] getMotherFirstNameCipher() {

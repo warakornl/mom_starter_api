@@ -132,6 +132,56 @@ public class Reminder {
     private boolean active = true;
 
     /**
+     * By-ITEM pregnancy-loss survival allow-list flag (AC-2.3 / LOSS-INV-5).
+     * Default {@code false} = "pregnancy-progress, deactivate on loss" — the safe default
+     * (Z-18: fail toward stopping pregnancy content). {@code true} = this reminder is NOT
+     * pregnancy-progress and MUST keep firing across a loss (e.g. a post-loss clinical
+     * follow-up appointment, or a non-pregnancy medication).
+     *
+     * <p><strong>Never inferred from {@link #type}</strong> — the precise clinical
+     * membership (which reminder kinds/instances are pregnancy-progress vs surviving) needs
+     * clinical + {@code security-compliance} sign-off and is not fixed by this column alone
+     * (data-model §5 L282 / functional-spec §8).
+     *
+     * <p>Read by the {@code POST /pregnancy-profile/loss-event} sweep: every reminder with
+     * {@code survivesEnded = false AND active = true AND deletedAt IS NULL} is deactivated in
+     * the same DB transaction as the {@code lifecycle → 'ended'} write.
+     */
+    @Column(name = "survives_ended", nullable = false)
+    private boolean survivesEnded = false;
+
+    /**
+     * Reversible-tombstone provenance marker (data-model §5 L512 / functional-spec §6).
+     * {@code null} = never swept by the pregnancy-loss path. {@code "loss_event"} = the only
+     * value this MVP writes — stamped by the {@code loss-event} sweep alongside
+     * {@link #deactivatedAt}, cleared back to {@code null} by the {@code reopen} sweep.
+     *
+     * <p>This is the <strong>scoping key</strong> for {@code reopen}'s re-activation predicate:
+     * only rows with {@code deactivatedBy = "loss_event"} (AND {@code deletedAt IS NULL}) are
+     * re-activated — a reminder the user themselves soft-deleted while {@code ended} keeps its
+     * tombstone and is excluded, even though this marker may still read {@code "loss_event"}
+     * (functional-spec §6.2 / §10.7).
+     *
+     * <p><strong>Deactivate (ม.21) &ne; erase (ม.33)</strong> — this is a soft deactivation
+     * marker, NOT a {@link #deletedAt} hard-delete and NOT a crypto-shred; the source reminder
+     * row is fully retained (US-3/AC-3.3 export). No auto-purge on {@code lifecycle='ended'}
+     * (S5) — this column is intentionally excluded from the 180-day tombstone-GC horizon,
+     * which keys off {@link #deletedAt} only.
+     */
+    @Column(name = "deactivated_by")
+    private String deactivatedBy;
+
+    /**
+     * Absolute-UTC instant the {@code loss_event} sweep deactivated this reminder (the
+     * {@code <sync>} clock family, FLAG-1 — a system/action instant, NOT a floating-civil
+     * bucket-key event time). {@code null} unless {@link #deactivatedBy} is set. Cleared back
+     * to {@code null} by the {@code reopen} sweep in the same transaction as
+     * {@link #deactivatedBy}.
+     */
+    @Column(name = "deactivated_at")
+    private Instant deactivatedAt;
+
+    /**
      * Optional tag marking this reminder as a care-activity reminder for auto-stock-decrement.
      *
      * <p>Constrained by DB CHECK to {@code 'diaper_change' | 'bathing'} (V20260710000022).
@@ -245,6 +295,15 @@ public class Reminder {
 
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
+
+    public boolean isSurvivesEnded() { return survivesEnded; }
+    public void setSurvivesEnded(boolean survivesEnded) { this.survivesEnded = survivesEnded; }
+
+    public String getDeactivatedBy() { return deactivatedBy; }
+    public void setDeactivatedBy(String deactivatedBy) { this.deactivatedBy = deactivatedBy; }
+
+    public Instant getDeactivatedAt() { return deactivatedAt; }
+    public void setDeactivatedAt(Instant deactivatedAt) { this.deactivatedAt = deactivatedAt; }
 
     public Long getVersion() { return version; }
 
