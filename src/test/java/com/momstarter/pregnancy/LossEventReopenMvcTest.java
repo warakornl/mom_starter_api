@@ -300,6 +300,40 @@ class LossEventReopenMvcTest {
     }
 
     // =========================================================================
+    // 403-before-404 ordering (functional-spec §3 — appsec review item (2)):
+    // consent must be checked before profile-existence so a caller whose consent
+    // is withdrawn/absent can never distinguish "no profile" (404) from "profile
+    // exists but I lack consent" (403) by response code alone.
+    // =========================================================================
+
+    @Test
+    void lossEvent_consentDenied_noProfileEitherWay_returns403NotFound() throws Exception {
+        // No profile created at all — consent gate MUST still fire first (403, not 404).
+        when(consentChecker.isGranted(any(), eq("general_health"))).thenReturn(false);
+
+        mvc.perform(post("/pregnancy-profile/loss-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("If-Match", "\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("consent_required"))
+                .andExpect(jsonPath("$.details").value("general_health"));
+    }
+
+    @Test
+    void reopen_consentDenied_noProfileEitherWay_returns403NotFound() throws Exception {
+        when(consentChecker.isGranted(any(), eq("general_health"))).thenReturn(false);
+
+        mvc.perform(post("/pregnancy-profile/reopen")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("If-Match", "\"0\""))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("consent_required"))
+                .andExpect(jsonPath("$.details").value("general_health"));
+    }
+
+    // =========================================================================
     // 428 — If-Match absent / 412 — unparseable
     // =========================================================================
 

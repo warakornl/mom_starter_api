@@ -425,13 +425,18 @@ public class PregnancyProfileService {
     public PregnancyProfileResponse recordLossEvent(UUID userId, LossEventInput input,
                                                     String ifMatch, LocalDate clientDate) {
 
-        // 1 — Profile must exist
-        PregnancyProfile profile = requireProfile(userId);
-
-        // 2 — Consent gate (general_health)
+        // 1 — Consent gate (general_health) — 403-BEFORE-404 per functional-spec §3: checked
+        // before profile existence so a consent-withdrawn caller gets a consistent 403
+        // regardless of whether a profile exists (avoids leaking profile existence via the
+        // 403-vs-404 status distinction). (birth-event still checks profile-existence first —
+        // a pre-existing divergence tracked separately for system-analyst to rule on; not
+        // changed here, see recordBirthEvent.)
         if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
             throw new ApiException(403, "consent_required", GENERAL_HEALTH);
         }
+
+        // 2 — Profile must exist
+        PregnancyProfile profile = requireProfile(userId);
 
         // 3 — If-Match required + freshness
         if (ifMatch == null || ifMatch.isBlank()) {
@@ -512,13 +517,14 @@ public class PregnancyProfileService {
     @Transactional
     public PregnancyProfileResponse reopen(UUID userId, String ifMatch, LocalDate clientDate) {
 
-        // 1 — Profile must exist
-        PregnancyProfile profile = requireProfile(userId);
-
-        // 2 — Consent gate (general_health)
+        // 1 — Consent gate (general_health) — 403-BEFORE-404 per functional-spec §3 (same
+        // ordering rationale as recordLossEvent; birth-event divergence tracked separately).
         if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
             throw new ApiException(403, "consent_required", GENERAL_HEALTH);
         }
+
+        // 2 — Profile must exist
+        PregnancyProfile profile = requireProfile(userId);
 
         // 3 — If-Match required + freshness
         if (ifMatch == null || ifMatch.isBlank()) {
