@@ -2,6 +2,7 @@ package com.momstarter.error;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -48,7 +49,11 @@ public class GlobalExceptionHandler {
             // Offline-sync engine error codes (api-contract "Offline-sync engine (PINNED)")
             Map.entry("batch_too_large",          "Batch exceeds maximum allowed size (1000 records or 5 MB)."),
             Map.entry("invalid_cursor",           "Continuation cursor is invalid or has expired."),
-            Map.entry("watermark_expired",        "Watermark is too old. A full resync is required.")
+            Map.entry("watermark_expired",        "Watermark is too old. A full resync is required."),
+            // Frozen app-wide malformed-body code (api-contract "Status codes" L17; functional-spec
+            // pregnancy-loss-recording-functional-spec.md §10.12 — parse-fail -> 400 bad_request,
+            // distinct from parse-succeeded-but-field-invalid -> 422 validation_error).
+            Map.entry("bad_request",              "The request body could not be parsed.")
             // NOTE: "account_deleted" entry removed (vestigial — nothing throws it).
             // The bounded ≤15-min access-token window after soft-delete is an accepted
             // MVP trade-off: refresh is revoked on DELETE /account, so the window cannot
@@ -94,5 +99,23 @@ public class GlobalExceptionHandler {
 
         Problem body = new Problem("validation_error", messageFor("validation_error"), details);
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
+    }
+
+    /**
+     * A structurally unparseable request body (non-JSON, malformed JSON, or a body that is not
+     * the expected top-level shape) → {@code 400 { code: "bad_request" }} — the FROZEN app-wide
+     * code (api-contract "Status codes" L17). Applies to every JSON-accepting endpoint
+     * (POST/PATCH/PUT), including the pregnancy-loss write path (loss-event/reopen).
+     *
+     * <p>This is rejected BEFORE any field/record validation runs — Jackson never even reaches
+     * {@code @RequestBody} field binding — so it is structurally distinct from
+     * {@code 422 validation_error} (a body that parsed successfully but failed a field-level
+     * rule). The two never overlap (functional-spec pregnancy-loss-recording-functional-spec.md
+     * §10.12).
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Problem> handleUnreadableBody(HttpMessageNotReadableException ex) {
+        Problem body = new Problem("bad_request", messageFor("bad_request"), null);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 }

@@ -1,6 +1,7 @@
 package com.momstarter.pregnancy;
 
 import com.momstarter.pregnancy.dto.BirthEventInput;
+import com.momstarter.pregnancy.dto.LossEventInput;
 import com.momstarter.pregnancy.dto.PregnancyProfileInput;
 import com.momstarter.pregnancy.dto.PregnancyProfileResponse;
 import org.springframework.http.HttpStatus;
@@ -155,6 +156,98 @@ public class PregnancyProfileController {
         PregnancyProfileResponse response;
         try {
             response = service.recordBirthEvent(userId, input, ifMatch, clientDate);
+        } catch (StaleVersionException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getCurrentProfile());
+        }
+
+        return ResponseEntity.ok(response);
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /pregnancy-profile/loss-event
+    // -------------------------------------------------------------------------
+
+    /**
+     * Records a pregnancy-loss event, transitioning the profile from {@code pregnant} to
+     * {@code ended} (pregnancy-loss-recording-functional-spec.md §7.1-§7.3). The ONLY
+     * {@code pregnant → ended} transition (LOSS-INV-1) — reversed exclusively by
+     * {@code POST /pregnancy-profile/reopen}.
+     *
+     * <p>Always returns {@code 200} on success (mutates the existing profile row, not a create).
+     * In the SAME DB transaction the server also deactivates every reminder NOT flagged
+     * {@code survives_ended} (reversible soft tombstone — LOSS-INV-3/4/5).
+     *
+     * <p>Error codes (functional-spec §7.1 P1-P8 truth table):
+     * <ul>
+     *   <li>{@code 403 consent_required (details:"general_health")}</li>
+     *   <li>{@code 428 precondition_required} — {@code If-Match} absent</li>
+     *   <li>{@code 412 precondition_failed} — {@code If-Match} unparseable</li>
+     *   <li>{@code 404 not_found} — no live profile for this user</li>
+     *   <li>{@code 409} — {@code If-Match} version stale (body = current authoritative profile)</li>
+     *   <li>{@code 409 invalid_lifecycle_state (details:"postpartum")} — loss is pregnant-only</li>
+     *   <li>{@code 422 validation_error (details: loss_date_range | loss_date_malformed)}</li>
+     * </ul>
+     *
+     * <p>{@code lossDate} is OPTIONAL/skippable — an empty/absent body is a full success
+     * (LOSS-INV-11). A structurally non-JSON body is rejected {@code 400 bad_request} by
+     * {@code GlobalExceptionHandler} before this method is invoked (functional-spec §10.12).
+     */
+    @PostMapping("/loss-event")
+    public ResponseEntity<?> lossEvent(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestHeader(value = "X-Client-Date", required = false) String clientDateHeader,
+            @RequestHeader(value = "If-Match", required = false) String ifMatch,
+            @RequestBody(required = false) LossEventInput input) {
+
+        UUID userId = UUID.fromString(jwt.getSubject());
+        LocalDate clientDate = parseClientDate(clientDateHeader);
+
+        PregnancyProfileResponse response;
+        try {
+            response = service.recordLossEvent(userId, input, ifMatch, clientDate);
+        } catch (StaleVersionException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getCurrentProfile());
+        }
+
+        return ResponseEntity.ok(response);
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /pregnancy-profile/reopen
+    // -------------------------------------------------------------------------
+
+    /**
+     * Reverses a pregnancy-loss event, transitioning the profile from {@code ended} back to
+     * {@code pregnant} (functional-spec §7.4, US-4 correction). Explicit, always-available —
+     * NOT a timed undo. Any request body is ignored.
+     *
+     * <p>Always returns {@code 200} on success. In the SAME DB transaction the server clears
+     * {@code loss_date := NULL} (S4/LOSS-INV-6) and re-activates exactly the reminders it
+     * deactivated on the corresponding {@code loss-event} (LOSS-INV-3).
+     *
+     * <p>Error codes (functional-spec §7.4 P1-P7 truth table):
+     * <ul>
+     *   <li>{@code 403 consent_required (details:"general_health")}</li>
+     *   <li>{@code 428 precondition_required} — {@code If-Match} absent</li>
+     *   <li>{@code 412 precondition_failed} — {@code If-Match} unparseable</li>
+     *   <li>{@code 404 not_found} — no live profile for this user</li>
+     *   <li>{@code 409} — {@code If-Match} version stale (body = current authoritative profile)</li>
+     *   <li>{@code 409 invalid_lifecycle_state (details:"postpartum")} — reopen is ended-only
+     *       ({@code postpartum → pregnant} re-open stays deferred, OQ-13)</li>
+     * </ul>
+     */
+    @PostMapping("/reopen")
+    public ResponseEntity<?> reopen(
+            @AuthenticationPrincipal Jwt jwt,
+            @RequestHeader(value = "X-Client-Date", required = false) String clientDateHeader,
+            @RequestHeader(value = "If-Match", required = false) String ifMatch) {
+
+        UUID userId = UUID.fromString(jwt.getSubject());
+        LocalDate clientDate = parseClientDate(clientDateHeader);
+
+        PregnancyProfileResponse response;
+        try {
+            response = service.reopen(userId, ifMatch, clientDate);
         } catch (StaleVersionException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getCurrentProfile());
         }

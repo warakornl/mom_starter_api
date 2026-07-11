@@ -2,12 +2,16 @@ package com.momstarter.pregnancy;
 
 import com.momstarter.error.ApiException;
 import com.momstarter.pregnancy.dto.BirthEventInput;
+import com.momstarter.pregnancy.dto.LossEventInput;
 import com.momstarter.pregnancy.dto.PregnancyProfileInput;
 import com.momstarter.pregnancy.dto.PregnancyProfileResponse;
+import com.momstarter.reminder.ReminderRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.Base64;
 import java.util.Optional;
 import java.util.UUID;
@@ -53,11 +57,14 @@ public class PregnancyProfileService {
 
     private final PregnancyProfileRepository repository;
     private final ConsentChecker consentChecker;
+    private final ReminderRepository reminderRepository;
 
     public PregnancyProfileService(PregnancyProfileRepository repository,
-                                   ConsentChecker consentChecker) {
+                                   ConsentChecker consentChecker,
+                                   ReminderRepository reminderRepository) {
         this.repository = repository;
         this.consentChecker = consentChecker;
+        this.reminderRepository = reminderRepository;
     }
 
     // -------------------------------------------------------------------------
@@ -366,6 +373,230 @@ public class PregnancyProfileService {
         PregnancyProfile saved = repository.saveAndFlush(profile);
         PostpartumAge pa = PostpartumAge.compute(saved.getBirthDate(), clientDate);
         return PregnancyProfileResponse.of(saved, pa);
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /pregnancy-profile/loss-event
+    // -------------------------------------------------------------------------
+
+    /** Light, non-judgemental sanity floor: {@code edd - 301 days} (functional-spec §7.2). */
+    private static final long LOSS_DATE_FLOOR_DAYS_BEFORE_EDD = 301L;
+
+    /**
+     * Records a pregnancy-loss event, transitioning {@code lifecycle: pregnant -> ended}
+     * (functional-spec pregnancy-loss-recording-functional-spec.md §7.1-§7.3, LOSS-INV-1..12).
+     *
+     * <p>Preconditions, in the EXACT order the functional spec's truth-table requires:
+     * <ol>
+     *   <li>Profile must exist (live, non-deleted) - {@code 404 not_found} if absent.</li>
+     *   <li>Consent gate: {@code general_health} must be granted - {@code 403 consent_required}.</li>
+     *   <li>{@code If-Match} header - absent -&gt; {@code 428}; unparseable -&gt; {@code 412};
+     *       stale (well-formed but mismatched) -&gt; {@code 409} with the current profile.</li>
+     *   <li>Lifecycle guard: {@code postpartum} -&gt; {@code 409 invalid_lifecycle_state
+     *       details:"postpartum"}; {@code ended} -&gt; idempotent (below); {@code pregnant} -&gt; apply.</li>
+     *   <li>{@code lossDate} validation (§7.2): malformed/time-component -&gt;
+     *       {@code 422 validation_error details:"loss_date_malformed"}; out of the light sanity
+     *       window (future, or before {@code edd - 301d}) -&gt;
+     *       {@code 422 validation_error details:"loss_date_range"}.</li>
+     * </ol>
+     *
+     * <p><strong>LOSS-INV-3 atomicity</strong>: the enum flip, {@code loss_date} write,
+     * {@code version}/{@code updated_at} bump on the profile, AND the reminder sweep (deactivate
+     * every {@code survives_ended=false AND active=true AND deleted_at IS NULL} reminder, bumping
+     * each swept reminder's {@code version}/{@code updated_at}) all happen inside this single
+     * {@code @Transactional} method against the real Postgres/H2-PG-mode store - a genuine DB
+     * transaction, not an in-memory map. If any part throws, Spring rolls back the WHOLE thing.
+     *
+     * <p><strong>Idempotency (§7.6)</strong>: already-{@code ended} + same {@code lossDate}
+     * (both-NULL counts as equal) -&gt; {@code 200}, {@code version} NOT bumped, sweep NOT re-run.
+     * Already-{@code ended} + differing {@code lossDate} -&gt; corrects the date, bumps
+     * {@code version}, sweep NOT re-run (reminders already swept).
+     *
+     * @param userId     authenticated user id
+     * @param input      request body ({@code lossDate} optional; may be {@code null} for no body)
+     * @param ifMatch    raw {@code If-Match} header value (may be null)
+     * @param clientDate civil "today" ({@code X-Client-Date} or UTC fallback) - used for the
+     *                   {@code lossDate} upper-bound sanity check and the response snapshot
+     * @return the updated/current profile as an "ended"-lifecycle response snapshot
+     * @throws ApiException          404, 409 (lifecycle/state), 403, 422
+     * @throws StaleVersionException 409 (version mismatch; caller attaches current profile body)
+     */
+    @Transactional
+    public PregnancyProfileResponse recordLossEvent(UUID userId, LossEventInput input,
+                                                    String ifMatch, LocalDate clientDate) {
+
+        // 1 — Profile must exist
+        PregnancyProfile profile = requireProfile(userId);
+
+        // 2 — Consent gate (general_health)
+        if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
+            throw new ApiException(403, "consent_required", GENERAL_HEALTH);
+        }
+
+        // 3 — If-Match required + freshness
+        if (ifMatch == null || ifMatch.isBlank()) {
+            throw new ApiException(428, "precondition_required");
+        }
+        long clientVersion = parseIfMatch(ifMatch);
+        if (clientVersion != profile.getVersion()) {
+            throw new StaleVersionException(buildResponse(profile, clientDate));
+        }
+
+        // 4 — Lifecycle guard (P7 truth table, §7.1)
+        if ("postpartum".equals(profile.getLifecycle())) {
+            throw new ApiException(409, "invalid_lifecycle_state", "postpartum");
+        }
+
+        // 5 — Validate lossDate (§7.2) — runs whether pregnant (apply) or already-ended (idempotent)
+        LocalDate lossDate = parseAndValidateLossDate(input, profile.getEdd(), clientDate);
+
+        boolean alreadyEnded = "ended".equals(profile.getLifecycle());
+        if (alreadyEnded) {
+            // §7.6 content-level idempotency: same lossDate (both-NULL counts as equal) → true no-op.
+            if (java.util.Objects.equals(lossDate, profile.getLossDate())) {
+                return buildResponse(profile, clientDate);
+            }
+            // Differing lossDate → correction only; sweep NOT re-run (already swept).
+            profile.setLossDate(lossDate);
+            PregnancyProfile saved = repository.saveAndFlush(profile);
+            return buildResponse(saved, clientDate);
+        }
+
+        // 6 — pregnant → ended transition (the primary path) — LOSS-INV-3 atomic block
+        profile.setLifecycle("ended");
+        profile.setLossDate(lossDate);
+        // birthDate/edd deliberately untouched (§7.3 steps 5).
+        PregnancyProfile saved = repository.saveAndFlush(profile);
+
+        // Reminder sweep — same transaction, same method, real DB UPDATE (LOSS-INV-3/4/5).
+        reminderRepository.sweepDeactivateOnLossEvent(userId, Instant.now());
+
+        return buildResponse(saved, clientDate);
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /pregnancy-profile/reopen
+    // -------------------------------------------------------------------------
+
+    /**
+     * Reverses a pregnancy-loss event, transitioning {@code lifecycle: ended -> pregnant}
+     * (functional-spec §7.4, US-4 / OQ-PP1). Explicit, always-available — NOT a timed undo.
+     *
+     * <p>Preconditions, in order:
+     * <ol>
+     *   <li>Profile must exist - {@code 404 not_found} if absent.</li>
+     *   <li>Consent gate: {@code general_health} - {@code 403 consent_required}.</li>
+     *   <li>{@code If-Match} - absent -&gt; {@code 428}; unparseable -&gt; {@code 412};
+     *       stale -&gt; {@code 409} with the current profile.</li>
+     *   <li>Lifecycle guard: {@code postpartum} -&gt; {@code 409 invalid_lifecycle_state
+     *       details:"postpartum"}; {@code pregnant} -&gt; idempotent no-op; {@code ended} -&gt; apply.</li>
+     * </ol>
+     *
+     * <p><strong>LOSS-INV-6 (S4)</strong>: {@code loss_date := NULL} is set in the SAME
+     * transaction as the enum flip — a first-class transactional postcondition, never a
+     * follow-up cleanup call. <strong>LOSS-INV-3</strong>: the enum flip, date-clear,
+     * {@code version}/{@code updated_at} bump, AND the reminder re-activation sweep (every
+     * {@code deactivated_by='loss_event' AND deleted_at IS NULL} reminder for this user) all
+     * happen inside this one {@code @Transactional} method against the real store.
+     *
+     * <p><strong>Idempotency</strong>: already-{@code pregnant} -&gt; {@code 200}, no
+     * {@code version} bump, no re-activation sweep re-run (functional-spec §7.6).
+     *
+     * @param userId     authenticated user id
+     * @param ifMatch    raw {@code If-Match} header value (may be null)
+     * @param clientDate civil "today" ({@code X-Client-Date} or UTC fallback) for the response
+     * @return the updated/current profile as a "pregnant"-lifecycle response snapshot
+     * @throws ApiException          404, 409 (lifecycle/state), 403
+     * @throws StaleVersionException 409 (version mismatch; caller attaches current profile body)
+     */
+    @Transactional
+    public PregnancyProfileResponse reopen(UUID userId, String ifMatch, LocalDate clientDate) {
+
+        // 1 — Profile must exist
+        PregnancyProfile profile = requireProfile(userId);
+
+        // 2 — Consent gate (general_health)
+        if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
+            throw new ApiException(403, "consent_required", GENERAL_HEALTH);
+        }
+
+        // 3 — If-Match required + freshness
+        if (ifMatch == null || ifMatch.isBlank()) {
+            throw new ApiException(428, "precondition_required");
+        }
+        long clientVersion = parseIfMatch(ifMatch);
+        if (clientVersion != profile.getVersion()) {
+            throw new StaleVersionException(buildResponse(profile, clientDate));
+        }
+
+        // 4 — Lifecycle guard (P7 truth table, §7.4)
+        if ("postpartum".equals(profile.getLifecycle())) {
+            throw new ApiException(409, "invalid_lifecycle_state", "postpartum");
+        }
+        if ("pregnant".equals(profile.getLifecycle())) {
+            // Already pregnant → idempotent no-op: no bump, no re-activation sweep re-run.
+            return buildResponse(profile, clientDate);
+        }
+
+        // 5 — ended → pregnant transition — LOSS-INV-3/6 atomic block
+        profile.setLifecycle("pregnant");
+        profile.setLossDate(null); // S4 — cleared, not orphaned, same transaction (LOSS-INV-6)
+        // edd retained → gestational week resumes (§7.4 step 5).
+        PregnancyProfile saved = repository.saveAndFlush(profile);
+
+        // Reminder re-activation sweep — same transaction, real DB UPDATE (LOSS-INV-3/4/5).
+        reminderRepository.sweepReactivateOnReopen(userId, Instant.now());
+
+        return buildResponse(saved, clientDate);
+    }
+
+    /**
+     * Parses and validates the {@code lossDate} field of a {@link LossEventInput}
+     * (functional-spec §7.2). Runs REGARDLESS of whether the transition applies or is
+     * idempotent, so a stale/malformed re-POST is still rejected consistently.
+     *
+     * <ul>
+     *   <li>Absent input, absent key, or explicit null -&gt; returns {@code null} (full success,
+     *       LOSS-INV-11 — never mandatory).</li>
+     *   <li>Present but not a bare {@code YYYY-MM-DD} civil date (time component, impossible
+     *       date, free text) -&gt; {@code 422 validation_error details:"loss_date_malformed"}.</li>
+     *   <li>Present, parseable, but outside the light sanity window
+     *       ({@code lossDate > clientDate+1d} OR {@code lossDate < edd-301d}) -&gt;
+     *       {@code 422 validation_error details:"loss_date_range"} (same sub-code for both
+     *       bounds, by design — §7.2).</li>
+     * </ul>
+     *
+     * <p>The upper bound uses {@code clientDate + 1 day} slack per functional-spec §7.2 ("If
+     * {@code X-Client-Date} is absent, fall back to server UTC date plus one calendar day of
+     * slack") — applied uniformly here since {@code clientDate} is already resolved to that
+     * UTC-fallback-or-header value by the controller before this method is called.
+     */
+    private static LocalDate parseAndValidateLossDate(LossEventInput input, LocalDate edd,
+                                                      LocalDate clientDate) {
+        String raw = (input != null) ? input.getLossDate() : null;
+        if (raw == null || raw.isBlank()) {
+            return null; // absent/omitted/explicit-null → stored NULL, full success
+        }
+
+        LocalDate lossDate;
+        try {
+            // Strict YYYY-MM-DD only — a time component (e.g. "...T12:00:00") or any
+            // non-ISO-date shape fails LocalDate.parse and is rejected as malformed (§10.12).
+            lossDate = LocalDate.parse(raw.trim());
+        } catch (DateTimeParseException e) {
+            throw new ApiException(422, "validation_error", "loss_date_malformed");
+        }
+
+        LocalDate upperBound = clientDate.plusDays(1); // §7.2 slack for TH (UTC+7) post-midnight
+        if (lossDate.isAfter(upperBound)) {
+            throw new ApiException(422, "validation_error", "loss_date_range");
+        }
+        LocalDate lowerBound = edd.minusDays(LOSS_DATE_FLOOR_DAYS_BEFORE_EDD);
+        if (lossDate.isBefore(lowerBound)) {
+            throw new ApiException(422, "validation_error", "loss_date_range");
+        }
+
+        return lossDate;
     }
 
     // -------------------------------------------------------------------------

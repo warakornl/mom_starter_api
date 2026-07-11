@@ -63,6 +63,16 @@ public record PregnancyProfileResponse(
         @JsonFormat(pattern = "yyyy-MM-dd")
         LocalDate birthDate,
 
+        /**
+         * Floating-civil loss date (data-model §5 "Pregnancy-loss lifecycle transition" L275).
+         * {@code null} unless {@code lifecycle = "ended"} and the mother chose to record a date
+         * (OPTIONAL/skippable, LOSS-INV-11) — excluded from JSON by {@code @JsonInclude(NON_NULL)}.
+         * Set by {@code POST /pregnancy-profile/loss-event}; cleared to {@code null} in the same
+         * transaction as {@code POST /pregnancy-profile/reopen} (S4/LOSS-INV-6).
+         */
+        @JsonFormat(pattern = "yyyy-MM-dd")
+        LocalDate lossDate,
+
         // ---- Name cipher fields (client-encrypted Base64, optional/nullable) ----
 
         /**
@@ -178,6 +188,7 @@ public record PregnancyProfileResponse(
                 p.getEddBasis(),
                 p.getLifecycle(),
                 p.getBirthDate(),             // null while pregnant
+                p.getLossDate(),              // null unless ended + date recorded
                 toBase64(p.getMotherFirstNameCipher()),
                 toBase64(p.getMotherLastNameCipher()),
                 toBase64(p.getBabyNameCipher()),
@@ -220,6 +231,7 @@ public record PregnancyProfileResponse(
                 p.getEddBasis(),
                 p.getLifecycle(),
                 p.getBirthDate(),             // non-null when postpartum
+                p.getLossDate(),              // null (postpartum profile never records a loss)
                 toBase64(p.getMotherFirstNameCipher()),
                 toBase64(p.getMotherLastNameCipher()),
                 toBase64(p.getBabyNameCipher()),
