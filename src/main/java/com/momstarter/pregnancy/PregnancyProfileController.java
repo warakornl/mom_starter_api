@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -45,9 +46,12 @@ import java.util.UUID;
 public class PregnancyProfileController {
 
     private final PregnancyProfileService service;
+    private final ProfileVerbIdempotencyStore idempotencyStore;
 
-    public PregnancyProfileController(PregnancyProfileService service) {
+    public PregnancyProfileController(PregnancyProfileService service,
+                                       ProfileVerbIdempotencyStore idempotencyStore) {
         this.service = service;
+        this.idempotencyStore = idempotencyStore;
     }
 
     // -------------------------------------------------------------------------
@@ -86,16 +90,31 @@ public class PregnancyProfileController {
      * XOR validation: exactly one of {@code edd} / {@code currentWeek} → 422 if violated.
      * EDD window guard: {@code clientDate−28d ≤ edd ≤ clientDate+308d} → 422 if violated.
      * {@code If-Match} required on update → 428 if absent; 409 with current body if stale.
+     *
+     * <p><strong>{@code Idempotency-Key}</strong> (optional, OR-BACKEND-1): when present and a
+     * stored result already exists for {@code (userId, key)}, the ORIGINAL response (status +
+     * body) is replayed verbatim and the mutation is NOT re-executed — a repeated key is the
+     * SAME logical intent (functional-spec §8, OR-INV-4). A first-time key runs normally; only
+     * its 2xx outcome is cached (a transient 409 is never cached/replayed).
      */
     @PutMapping
     public ResponseEntity<?> put(
             @AuthenticationPrincipal Jwt jwt,
             @RequestHeader(value = "X-Client-Date", required = false) String clientDateHeader,
             @RequestHeader(value = "If-Match", required = false) String ifMatch,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestBody(required = false) PregnancyProfileInput input) {
 
         UUID userId = UUID.fromString(jwt.getSubject());
         LocalDate clientDate = parseClientDate(clientDateHeader);
+
+        if (idempotencyKey != null) {
+            Optional<ProfileVerbIdempotencyStore.StoredResult> replay =
+                    idempotencyStore.get(userId, idempotencyKey);
+            if (replay.isPresent()) {
+                return ResponseEntity.status(replay.get().status()).body(replay.get().body());
+            }
+        }
 
         PregnancyProfileService.PutResult result;
         try {
@@ -104,12 +123,18 @@ public class PregnancyProfileController {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getCurrentProfile());
         }
 
-        return switch (result) {
+        ResponseEntity<?> response = switch (result) {
             case PregnancyProfileService.PutResult.Created c ->
                     ResponseEntity.status(HttpStatus.CREATED).body(c.profile());
             case PregnancyProfileService.PutResult.Updated u ->
                     ResponseEntity.ok(u.profile());
         };
+
+        if (idempotencyKey != null) {
+            idempotencyStore.put(userId, idempotencyKey,
+                    response.getStatusCode().value(), response.getBody());
+        }
+        return response;
     }
 
     // -------------------------------------------------------------------------

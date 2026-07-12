@@ -726,4 +726,92 @@ class PregnancyProfileMvcTest {
                 .andExpect(jsonPath("$.code").value("validation_error"))
                 .andExpect(jsonPath("$.details").value("name_too_large"));
     }
+
+    // =========================================================================
+    // Idempotency-Key replay (OR-BACKEND-1 / OR-INV-4 / functional-spec §8)
+    // RED: fails until the controller wires Idempotency-Key + ProfileVerbIdempotencyStore
+    // =========================================================================
+
+    /**
+     * A repeated {@code Idempotency-Key} on {@code PUT /pregnancy-profile} must return the
+     * EXACT original stored response (same status + body) and must NOT re-apply the mutation
+     * a second time. Proven against REAL persistence: the profile row's {@code version} must
+     * still read as 1 after the second (replayed) call — not bumped to 2 — via a direct
+     * repository read, not just response-body comparison (green-tests-can-hide-a-shell
+     * discipline).
+     */
+    @Test
+    void put_repeatedIdempotencyKey_replaysStoredResponse_doesNotDoubleApply() throws Exception {
+        // Create (version 0)
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-01\"}"))
+                .andExpect(status().isCreated());
+
+        String idemKey = "put-idem-key-1";
+
+        // First send with the Idempotency-Key → real update, version 0→1
+        MvcResult first = mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", idemKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-04-10\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.edd").value("2027-04-10"))
+                .andExpect(jsonPath("$.version").value(1))
+                .andReturn();
+
+        // Real persistence check: version is 1 after the first send.
+        PregnancyProfile afterFirst = profiles.findByUserId(user.getId()).orElseThrow();
+        assertThat(afterFirst.getVersion()).isEqualTo(1L);
+
+        // Second send: SAME Idempotency-Key, stale If-Match "0" (as a real client retry would
+        // replay unchanged headers) → MUST replay the ORIGINAL 200 body, NOT throw 409, and
+        // MUST NOT bump the version again.
+        MvcResult second = mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", idemKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-04-10\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.edd").value("2027-04-10"))
+                .andExpect(jsonPath("$.version").value(1))
+                .andReturn();
+
+        assertThat(second.getResponse().getContentAsString())
+                .isEqualTo(first.getResponse().getContentAsString());
+
+        // REAL persistence proof: still version 1 — the mutation ran ONCE, not twice.
+        PregnancyProfile afterSecond = profiles.findByUserId(user.getId()).orElseThrow();
+        assertThat(afterSecond.getVersion()).isEqualTo(1L);
+    }
+
+    /**
+     * A DIFFERENT Idempotency-Key with a stale If-Match still 409s normally — idempotency
+     * replay must never mask a genuine version conflict for a first-time key.
+     */
+    @Test
+    void put_newIdempotencyKey_staleIfMatch_stillReturns409() throws Exception {
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-03-01\"}"))
+                .andExpect(status().isCreated());
+
+        mvc.perform(put("/pregnancy-profile")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"99\"")
+                        .header("Idempotency-Key", "brand-new-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"edd\":\"2027-04-10\"}"))
+                .andExpect(status().isConflict());
+    }
 }
