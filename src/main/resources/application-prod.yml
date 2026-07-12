@@ -1,0 +1,127 @@
+# Production profile — Pass 1 skeleton (deploy-pipeline-and-cloud-options.md §1.2/§1.4/§1.6).
+#
+# NO SECRETS ARE HARDCODED HERE. Every credential/endpoint is an ${ENV_VAR} placeholder,
+# resolved at container-runtime from AWS Secrets Manager via ECS task-definition secrets
+# injection (§1.6) — never baked into the image, never echoed/logged.
+#
+# This file does NOT set any momstarter.dev.* property. Absence + @Profile("!prod") on the
+# four dev-only beans (DevModeGuard, DevModeSeeder, LocalDevPasswordEmailSender,
+# ResetTokenExposureGuard) means none of them can be constructed under this profile,
+# regardless of what any dev flag is (mis)configured to.
+server:
+  servlet:
+    context-path: /v1
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: mom-starter-api
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: none      # schema is owned by Flyway, never by Hibernate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration,classpath:db/pg-only
+
+momstarter:
+  # ------------------------------------------------------------------------------------
+  # Launch-gate #3 (consent-enforce): MUST be true in prod — flips ConsentChecker from
+  # AlwaysGrantedConsentChecker (UAT default) to the real ConsentRecordConsentChecker.
+  # Verified by ProdProfileRejectsDevBeansTest.prodProfileGetsRealConsentCheckerWhenEnforced.
+  # ------------------------------------------------------------------------------------
+  consent:
+    enforce: true
+
+  # ------------------------------------------------------------------------------------
+  # Launch-gate #4 (real hard-erasure). Values below are ENGINEERING DEFAULTS ONLY.
+  #
+  # LEGAL-PENDING — confirm with legal before go-live: retention.days (180) and
+  # legal-hold-days (365) have NOT been confirmed by Thai legal counsel as satisfying PDPA
+  # storage-limitation (ม.33) / storage-minimisation principles, or PDPA ม.37 consent-audit
+  # evidence retention (consent-hardgate-erasure-design.md §2.3 / §3.2). Do NOT launch to
+  # production until legal sign-off on these two figures (mirrors application.yml markers).
+  # ------------------------------------------------------------------------------------
+  retention:
+    days: 180                # LEGAL-PENDING — confirm with legal before go-live
+    legal-hold-days: 365     # LEGAL-PENDING — confirm with legal before go-live
+  gc:
+    # Daily off-peak hard-erasure sweep cron (6-field Spring cron: s m h d M DOW).
+    # 20:00 UTC = 03:00 Bangkok ICT — off-peak for Thai users.
+    # Scheduling itself is always enabled via SchedulingConfig's @EnableScheduling
+    # (no separate on/off flag); this cron controls only the firing time.
+    cron: "0 0 20 * * *"     # LEGAL-PENDING — confirm with legal before go-live
+
+  ratelimit:
+    login-per-ip-per-min: 20
+    register-per-ip-per-min: 15
+    resend-per-ip-per-min: 10
+    forgot-per-ip-per-min: 10
+    forgot-per-account-per-min: 5
+    reset-per-ip-per-min: 10
+    verify-email-per-ip-per-min: 10
+
+  # dev.* is intentionally OMITTED from this file entirely (absence = false everywhere via
+  # @ConditionalOnProperty default). Even if an operator mistakenly sets one of these via an
+  # environment override, @Profile("!prod") on the four dev beans means the flag has zero
+  # effect under this profile — see ProdProfileRejectsDevBeansTest
+  # .prodProfileWithDevFlagsTruePoisonedIsInertAndBeansStayAbsent.
+
+# ---------------------------------------------------------------------------------------
+# KMS / field-encryption (Launch-gate #1) — Pass 2.
+# AwsKmsClient (AWS SDK v2, ap-southeast-7 CMK, @Profile("prod")) does not exist yet.
+# When Pass 2 lands, its config keys belong here, e.g.:
+#   momstarter:
+#     kms:
+#       cmk-key-id: ${KMS_CMK_KEY_ID}
+#       region: ap-southeast-7
+# Until then, KmsClient resolves to MockKmsClient (unconditional @Component — Pass 2 will add
+# @Profile("!prod") to it, mirroring this pass's dev-bean treatment).
+# ---------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------
+# SES email (Launch-gate #2) — Pass 2.
+# Real SES-backed PasswordEmailSender/VerificationEmailSender (@Profile("prod")) do not
+# exist yet. When Pass 2 lands, its config keys belong here, e.g.:
+#   momstarter:
+#     ses:
+#       from-address: ${SES_FROM_ADDRESS}
+#       region: ap-southeast-7
+# Until then, these interfaces resolve to LoggingPasswordEmailSender /
+# LoggingVerificationEmailSender (unconditional @Component — Pass 2 will add
+# @Profile("!prod") to the Logging* family, mirroring this pass's dev-bean treatment).
+# ---------------------------------------------------------------------------------------
+
+google:
+  client-id: ${GOOGLE_CLIENT_ID:}
+  jwks-uri: https://www.googleapis.com/oauth2/v3/certs
+
+# ---------------------------------------------------------------------------
+# Actuator + Micrometer (observability).
+# PROD NOTE: move to a dedicated management port (management.server.port=8081) restricted
+# to internal/VPC traffic only once the ECS network topology is in place — never expose to
+# the public internet (docs/architecture/infrastructure-diagram.md).
+# ---------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5,0.95,0.99
+      slo:
+        http.server.requests: 100ms,250ms,500ms,1s
