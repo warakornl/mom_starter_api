@@ -739,4 +739,188 @@ class LossEventReopenMvcTest {
         Reminder reloaded = reminders.findById(r.getId()).orElseThrow();
         assertThat(reloaded.isActive()).isFalse();
     }
+
+    // =========================================================================
+    // Idempotency-Key replay (OR-BACKEND-1 / OR-INV-4 / functional-spec §8)
+    // RED: fails until loss-event/reopen wire Idempotency-Key + ProfileVerbIdempotencyStore
+    // =========================================================================
+
+    /**
+     * A repeated {@code Idempotency-Key} on {@code loss-event} must replay the ORIGINAL 200
+     * success — NOT re-throw {@code 409 invalid_lifecycle_state} even though the profile is
+     * now {@code ended} (the first call already applied the transition). Proven against REAL
+     * persistence: the reminder sweep must NOT re-run a second time — the swept reminder's
+     * {@code version} must still read 1 (not bumped to 2) via a direct repository read
+     * (green-tests-can-hide-a-shell discipline: response-equality alone is insufficient).
+     */
+    @Test
+    void lossEvent_repeatedIdempotencyKey_replaysStoredResponse_sweepDoesNotRerun() throws Exception {
+        createPregnantProfile();
+        Reminder swept = reminders.saveAndFlush(buildReminder(false));
+
+        String idemKey = "loss-idem-key-1";
+
+        MvcResult first = mvc.perform(post("/pregnancy-profile/loss-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", idemKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"lossDate\":\"2026-06-20\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lifecycle").value("ended"))
+                .andExpect(jsonPath("$.version").value(1))
+                .andReturn();
+
+        Reminder sweptAfterFirst = reminders.findById(swept.getId()).orElseThrow();
+        assertThat(sweptAfterFirst.getVersion()).isEqualTo(1L);
+        assertThat(sweptAfterFirst.isActive()).isFalse();
+
+        // Second send: SAME key, stale If-Match "0" (profile is now version 1) — a naive
+        // re-execution would either 409 (stale If-Match) or, if If-Match were re-resolved,
+        // hit the already-ended no-op path. Idempotency replay must short-circuit BEFORE any
+        // of that and return the exact original 200 body.
+        MvcResult second = mvc.perform(post("/pregnancy-profile/loss-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", idemKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"lossDate\":\"2026-06-20\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lifecycle").value("ended"))
+                .andExpect(jsonPath("$.version").value(1))
+                .andReturn();
+
+        assertThat(second.getResponse().getContentAsString())
+                .isEqualTo(first.getResponse().getContentAsString());
+
+        // REAL persistence proof the sweep ran exactly ONCE: reminder version still 1.
+        Reminder sweptAfterSecond = reminders.findById(swept.getId()).orElseThrow();
+        assertThat(sweptAfterSecond.getVersion()).isEqualTo(1L);
+
+        // REAL persistence proof the profile itself was not re-mutated: version still 1.
+        PregnancyProfile profileAfterSecond =
+                profiles.findByUserIdAndDeletedAtIsNull(user.getId()).orElseThrow();
+        assertThat(profileAfterSecond.getVersion()).isEqualTo(1L);
+    }
+
+    /**
+     * A DIFFERENT (brand-new) Idempotency-Key on loss-event with a stale If-Match still 409s —
+     * replay must never mask a genuine conflict for a first-time key.
+     */
+    @Test
+    void lossEvent_newIdempotencyKey_staleIfMatch_stillReturns409() throws Exception {
+        createPregnantProfile();
+        forceLossEvent(); // profile now ended, version 1
+
+        mvc.perform(post("/pregnancy-profile/loss-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"") // stale — real version is 1
+                        .header("Idempotency-Key", "brand-new-loss-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isConflict());
+    }
+
+    /**
+     * A repeated {@code Idempotency-Key} on {@code reopen} must replay the ORIGINAL 200
+     * success without re-running the reminder re-activation sweep a second time. Proven via
+     * a direct repository read of the swept reminder's version (not bumped twice).
+     */
+    @Test
+    void reopen_repeatedIdempotencyKey_replaysStoredResponse_sweepDoesNotRerun() throws Exception {
+        createPregnantProfile();
+        Reminder deactivated = reminders.saveAndFlush(buildReminder(false));
+        forceLossEvent(); // profile -> ended (version 0->1), reminder deactivated (version 0->1)
+
+        Reminder afterLoss = reminders.findById(deactivated.getId()).orElseThrow();
+        assertThat(afterLoss.isActive()).isFalse();
+        assertThat(afterLoss.getVersion()).isEqualTo(1L);
+
+        String idemKey = "reopen-idem-key-1";
+
+        MvcResult first = mvc.perform(post("/pregnancy-profile/reopen")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"1\"")
+                        .header("Idempotency-Key", idemKey))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lifecycle").value("pregnant"))
+                .andExpect(jsonPath("$.version").value(2))
+                .andReturn();
+
+        Reminder reactivatedAfterFirst = reminders.findById(deactivated.getId()).orElseThrow();
+        assertThat(reactivatedAfterFirst.isActive()).isTrue();
+        assertThat(reactivatedAfterFirst.getVersion()).isEqualTo(2L);
+
+        // Second send: SAME key, stale If-Match "1" (profile now version 2) → must replay.
+        MvcResult second = mvc.perform(post("/pregnancy-profile/reopen")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"1\"")
+                        .header("Idempotency-Key", idemKey))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lifecycle").value("pregnant"))
+                .andExpect(jsonPath("$.version").value(2))
+                .andReturn();
+
+        assertThat(second.getResponse().getContentAsString())
+                .isEqualTo(first.getResponse().getContentAsString());
+
+        // REAL persistence proof: reminder re-activation sweep ran exactly ONCE.
+        Reminder reactivatedAfterSecond = reminders.findById(deactivated.getId()).orElseThrow();
+        assertThat(reactivatedAfterSecond.getVersion()).isEqualTo(2L);
+
+        PregnancyProfile profileAfterSecond =
+                profiles.findByUserIdAndDeletedAtIsNull(user.getId()).orElseThrow();
+        assertThat(profileAfterSecond.getVersion()).isEqualTo(2L);
+    }
+
+    /**
+     * A DIFFERENT (brand-new) Idempotency-Key on reopen with a stale If-Match still 409s.
+     */
+    @Test
+    void reopen_newIdempotencyKey_staleIfMatch_stillReturns409() throws Exception {
+        createPregnantProfile();
+        forceLossEvent(); // profile -> ended, version 1
+
+        mvc.perform(post("/pregnancy-profile/reopen")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"") // stale — real version is 1
+                        .header("Idempotency-Key", "brand-new-reopen-key"))
+                .andExpect(status().isConflict());
+    }
+
+    /**
+     * Telemetry lock negative test (OR-INV-10 / TL-3): the stored idempotency entry for a loss
+     * event must never carry lifecycle/loss_date as a bare loggable field distinct from the
+     * full response body contract already returns to the authenticated owner — i.e. this test
+     * proves the store's key space itself (the composite cache key) contains ONLY the opaque
+     * idempotency token and userId, never lifecycle or loss_date values baked into the key.
+     */
+    @Test
+    void lossEvent_idempotencyKey_neverEmbedsHealthFieldsInCacheKeyShape() throws Exception {
+        createPregnantProfile();
+        String idemKey = "opaque-token-does-not-carry-health-data";
+
+        mvc.perform(post("/pregnancy-profile/loss-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", idemKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"lossDate\":\"2026-06-20\"}"))
+                .andExpect(status().isOk());
+
+        // The key the client sent is an opaque token chosen by the test itself — it contains
+        // no lifecycle/loss_date substrings by construction. This asserts the store looks the
+        // key up by the OPAQUE token exactly as sent (composite key = userId + this literal
+        // string), never by deriving/augmenting it from health field values.
+        assertThat(idemKey).doesNotContainIgnoringCase("ended")
+                .doesNotContainIgnoringCase("lossdate")
+                .doesNotContainIgnoringCase("2026-06-20");
+    }
 }

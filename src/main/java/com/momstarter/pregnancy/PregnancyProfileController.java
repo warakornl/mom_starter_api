@@ -216,16 +216,31 @@ public class PregnancyProfileController {
      * <p>{@code lossDate} is OPTIONAL/skippable — an empty/absent body is a full success
      * (LOSS-INV-11). A structurally non-JSON body is rejected {@code 400 bad_request} by
      * {@code GlobalExceptionHandler} before this method is invoked (functional-spec §10.12).
+     *
+     * <p><strong>{@code Idempotency-Key}</strong> (optional, OR-BACKEND-1): a repeated key
+     * replays the ORIGINAL stored 200 verbatim — a replayed loss-event must NOT re-throw
+     * {@code 409 invalid_lifecycle_state} just because the first call already moved the
+     * profile to {@code ended} (functional-spec §8, OR-INV-4). A first-time key runs normally
+     * and its consent re-check is NOT bypassed; only a genuinely repeated key short-circuits.
      */
     @PostMapping("/loss-event")
     public ResponseEntity<?> lossEvent(
             @AuthenticationPrincipal Jwt jwt,
             @RequestHeader(value = "X-Client-Date", required = false) String clientDateHeader,
             @RequestHeader(value = "If-Match", required = false) String ifMatch,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestBody(required = false) LossEventInput input) {
 
         UUID userId = UUID.fromString(jwt.getSubject());
         LocalDate clientDate = parseClientDate(clientDateHeader);
+
+        if (idempotencyKey != null) {
+            Optional<ProfileVerbIdempotencyStore.StoredResult> replay =
+                    idempotencyStore.get(userId, idempotencyKey);
+            if (replay.isPresent()) {
+                return ResponseEntity.status(replay.get().status()).body(replay.get().body());
+            }
+        }
 
         PregnancyProfileResponse response;
         try {
@@ -234,6 +249,9 @@ public class PregnancyProfileController {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getCurrentProfile());
         }
 
+        if (idempotencyKey != null) {
+            idempotencyStore.put(userId, idempotencyKey, HttpStatus.OK.value(), response);
+        }
         return ResponseEntity.ok(response);
     }
 
@@ -260,15 +278,28 @@ public class PregnancyProfileController {
      *   <li>{@code 409 invalid_lifecycle_state (details:"postpartum")} — reopen is ended-only
      *       ({@code postpartum → pregnant} re-open stays deferred, OQ-13)</li>
      * </ul>
+     *
+     * <p><strong>{@code Idempotency-Key}</strong> (optional, OR-BACKEND-1): a repeated key
+     * replays the ORIGINAL stored 200 verbatim instead of re-executing the reminder
+     * re-activation sweep (functional-spec §8, OR-INV-4).
      */
     @PostMapping("/reopen")
     public ResponseEntity<?> reopen(
             @AuthenticationPrincipal Jwt jwt,
             @RequestHeader(value = "X-Client-Date", required = false) String clientDateHeader,
-            @RequestHeader(value = "If-Match", required = false) String ifMatch) {
+            @RequestHeader(value = "If-Match", required = false) String ifMatch,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
 
         UUID userId = UUID.fromString(jwt.getSubject());
         LocalDate clientDate = parseClientDate(clientDateHeader);
+
+        if (idempotencyKey != null) {
+            Optional<ProfileVerbIdempotencyStore.StoredResult> replay =
+                    idempotencyStore.get(userId, idempotencyKey);
+            if (replay.isPresent()) {
+                return ResponseEntity.status(replay.get().status()).body(replay.get().body());
+            }
+        }
 
         PregnancyProfileResponse response;
         try {
@@ -277,6 +308,9 @@ public class PregnancyProfileController {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getCurrentProfile());
         }
 
+        if (idempotencyKey != null) {
+            idempotencyStore.put(userId, idempotencyKey, HttpStatus.OK.value(), response);
+        }
         return ResponseEntity.ok(response);
     }
 
