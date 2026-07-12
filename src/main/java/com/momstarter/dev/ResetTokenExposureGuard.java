@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
@@ -37,8 +38,13 @@ import java.util.Set;
  * <p>This guard is intentionally a SEPARATE bean from {@link DevModeGuard} so that setting
  * <em>only</em> {@code expose-reset-token=true} (without {@code auto-verify-email}) still
  * engages a guard. One {@code @ConditionalOnProperty} cannot OR two flag names.
+ *
+ * <p>Also carries {@code @Profile("!prod")} (belt-and-suspenders, see
+ * deploy-pipeline-and-cloud-options.md §1.2 Path A): this bean cannot be constructed at all
+ * under the prod profile, independent of the flag or datasource URL heuristics below.
  */
 @Component
+@Profile("!prod")
 @ConditionalOnProperty(name = "momstarter.dev.expose-reset-token", havingValue = "true")
 public class ResetTokenExposureGuard {
 

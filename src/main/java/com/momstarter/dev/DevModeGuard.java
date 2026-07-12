@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
@@ -14,8 +15,13 @@ import java.util.Arrays;
  * Fail-safe guard that prevents momstarter.dev.auto-verify-email=true from running
  * in production or against a non-local database.
  *
- * <p>This bean is created ONLY when the dev flag is true (via @ConditionalOnProperty).
- * On @PostConstruct it inspects the active Spring profiles and the datasource URL:
+ * <p>This bean is created ONLY when the dev flag is true (via @ConditionalOnProperty) AND the
+ * active profile is not {@code prod} (via @Profile("!prod") — belt-and-suspenders, see
+ * deploy-pipeline-and-cloud-options.md §1.2 Path A). The @Profile check happens at
+ * bean-creation time, before @PostConstruct would even run, so a prod deploy can never
+ * construct this bean regardless of the flag or datasource URL.
+ *
+ * <p>On @PostConstruct it inspects the active Spring profiles and the datasource URL:
  * <ul>
  *   <li>If any active profile is "prod" (case-insensitive) → throw IllegalStateException</li>
  *   <li>If the datasource URL does not reference localhost / 127.0.0.1 / ::1 / h2: → throw</li>
@@ -24,6 +30,7 @@ import java.util.Arrays;
  * causes an immediate, loud startup failure rather than a silent security hole.
  */
 @Component
+@Profile("!prod")
 @ConditionalOnProperty(name = "momstarter.dev.auto-verify-email", havingValue = "true")
 public class DevModeGuard {
 
