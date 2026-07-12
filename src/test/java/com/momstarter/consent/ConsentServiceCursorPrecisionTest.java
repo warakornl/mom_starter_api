@@ -102,15 +102,30 @@ class ConsentServiceCursorPrecisionTest {
         consentRecords.save(r2);
         testEntityManager.flush();
 
-        Instant r1GrantedAt = r1.getGrantedAt();
-        Instant sameMillisLaterNanos = r1GrantedAt.plusNanos(500_000); // +0.5ms, same epoch milli
+        // Force BOTH rows onto controlled, millisecond-floor-anchored instants so the
+        // same-millisecond collision is 100% deterministic — never dependent on where the
+        // real Instant.now() clock happened to land within its current millisecond (a plain
+        // "+500 microseconds" offset off the real r1.getGrantedAt() could itself roll over
+        // into the NEXT millisecond depending on r1's actual nanos, which is exactly the kind
+        // of clock-timing flakiness this test exists to eliminate).
+        Instant millisFloor = Instant.ofEpochMilli(r1.getGrantedAt().toEpochMilli());
+        Instant r1Instant = millisFloor.plusNanos(100_000);  // .0001ms into the millisecond
+        Instant r2Instant = millisFloor.plusNanos(600_000);  // .0006ms — same millisecond, later nanos
         entityManager.createNativeQuery(
                         "UPDATE consent_record SET granted_at = :ts WHERE id = :id")
-                .setParameter("ts", java.sql.Timestamp.from(sameMillisLaterNanos))
+                .setParameter("ts", java.sql.Timestamp.from(r1Instant))
+                .setParameter("id", r1.getId())
+                .executeUpdate();
+        entityManager.createNativeQuery(
+                        "UPDATE consent_record SET granted_at = :ts WHERE id = :id")
+                .setParameter("ts", java.sql.Timestamp.from(r2Instant))
                 .setParameter("id", r2.getId())
                 .executeUpdate();
         entityManager.flush();
         entityManager.clear();
+
+        Instant r1GrantedAt = r1Instant;
+        Instant sameMillisLaterNanos = r2Instant;
 
         // Sanity precondition: both rows really do share the same truncated epoch milli,
         // so a naive millisecond-only cursor WOULD collide (proves this test actually
