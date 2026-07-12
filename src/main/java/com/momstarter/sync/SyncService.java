@@ -115,12 +115,15 @@ public class SyncService {
                                   String idempotencyKey,
                                   long payloadBytes) {
         // --- Validate required fields: lastPulledAt and changes ---
-        // Both are structurally required → 400 (contract §8: "whole-call 400 for missing changes/lastPulledAt")
+        // Both are structurally required → 400 bad_request (FROZEN app-wide code, api-contract.md:17;
+        // offline-sync-engine.md:178): a whole-call body that is not the expected top-level shape is
+        // "bad_request", never "validation_error" (that code is reserved for a body that parsed
+        // successfully but failed a field/per-record rule — see the rejected[] path below).
         if (request.lastPulledAt() == null) {
-            throw new ApiException(400, "validation_error", "lastPulledAt is required");
+            throw new ApiException(400, "bad_request", "lastPulledAt is required");
         }
         if (request.changes() == null) {
-            throw new ApiException(400, "validation_error", "changes is required");
+            throw new ApiException(400, "bad_request", "changes is required");
         }
 
         // --- Idempotency replay (§10 / OQ-SYNC-15) ---

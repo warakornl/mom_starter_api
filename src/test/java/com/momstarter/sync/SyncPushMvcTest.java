@@ -140,7 +140,12 @@ class SyncPushMvcTest {
                         .header("Authorization", "Bearer " + bearer)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                // api-contract.md:17 — frozen app-wide code for a structurally malformed
+                // whole-call body (missing changes/lastPulledAt) is "bad_request", NOT
+                // "validation_error" (that code is reserved for a parsed body that fails a
+                // field/per-record rule — see offline-sync-engine.md:178).
+                .andExpect(jsonPath("$.code").value("bad_request"));
     }
 
     @Test
@@ -153,7 +158,8 @@ class SyncPushMvcTest {
                         .header("Authorization", "Bearer " + bearer)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("bad_request"));
     }
 
     // -------------------------------------------------------------------------
