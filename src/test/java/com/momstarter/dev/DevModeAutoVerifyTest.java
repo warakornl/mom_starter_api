@@ -102,6 +102,7 @@ class DevModeAutoVerifyTest {
     private RegistrationService serviceWith(boolean autoVerifyEmail) {
         return new RegistrationService(
                 users, encoder, passwordPolicy, emailVerification, sender, jwt, refreshTokens,
-                rateLimiter, dekService, 1_000_000, 1_000_000, 1_000_000, autoVerifyEmail);
+                rateLimiter, dekService, 1_000_000, 1_000_000, 1_000_000,
+                Optional.of(new DevFlags(autoVerifyEmail)));
     }
 }

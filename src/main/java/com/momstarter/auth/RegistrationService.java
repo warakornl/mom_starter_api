@@ -6,6 +6,7 @@ import com.momstarter.account.UserRepository;
 import com.momstarter.auth.dto.AuthTokens;
 import com.momstarter.auth.dto.RegisterRequest;
 import com.momstarter.auth.dto.VerifyEmailRequest;
+import com.momstarter.dev.DevFlags;
 import com.momstarter.error.ApiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,7 +42,14 @@ public class RegistrationService {
     private final int registerMaxPerIpPerMin;
     private final int resendMaxPerIpPerMin;
     private final int verifyEmailMaxPerIpPerMin;
-    /** DEV ONLY — set via momstarter.dev.auto-verify-email (default false, true only in local profile). */
+    /**
+     * DEV ONLY — the EFFECTIVE value of momstarter.dev.auto-verify-email, read through
+     * {@link DevFlags} rather than a raw {@code @Value}. {@link DevFlags} is
+     * {@code @Profile("!prod")}, so under the prod profile no {@link DevFlags} bean exists,
+     * {@code devFlags} below is {@code Optional.empty()}, and this resolves to {@code false} —
+     * regardless of what the raw property is (mis)configured to. See {@link DevFlags}'s javadoc
+     * for why binding the property directly here was the Pass-1 regression.
+     */
     private final boolean autoVerifyEmail;
 
     public RegistrationService(UserRepository users,
@@ -56,7 +64,7 @@ public class RegistrationService {
                                @Value("${momstarter.ratelimit.register-per-ip-per-min:15}") int registerMaxPerIpPerMin,
                                @Value("${momstarter.ratelimit.resend-per-ip-per-min:10}") int resendMaxPerIpPerMin,
                                @Value("${momstarter.ratelimit.verify-email-per-ip-per-min:10}") int verifyEmailMaxPerIpPerMin,
-                               @Value("${momstarter.dev.auto-verify-email:false}") boolean autoVerifyEmail) {
+                               Optional<DevFlags> devFlags) {
         this.users = users;
         this.encoder = encoder;
         this.passwordPolicy = passwordPolicy;
@@ -69,7 +77,7 @@ public class RegistrationService {
         this.registerMaxPerIpPerMin = registerMaxPerIpPerMin;
         this.resendMaxPerIpPerMin = resendMaxPerIpPerMin;
         this.verifyEmailMaxPerIpPerMin = verifyEmailMaxPerIpPerMin;
-        this.autoVerifyEmail = autoVerifyEmail;
+        this.autoVerifyEmail = devFlags.map(DevFlags::isAutoVerifyEmail).orElse(false);
     }
 
     public void register(RegisterRequest req, String clientIp) {
@@ -93,7 +101,12 @@ public class RegistrationService {
 
             if (autoVerifyEmail) {
                 // DEV MODE ONLY — skip the two-phase flow so testers can log in immediately.
-                // This branch is guarded by DevModeGuard; it will never reach here in production.
+                // `autoVerifyEmail` is derived from Optional<DevFlags>, and DevFlags carries
+                // @Profile("!prod"), so no DevFlags bean exists under the prod profile and
+                // autoVerifyEmail resolves to false there regardless of the raw
+                // momstarter.dev.auto-verify-email property value — this branch is therefore
+                // unreachable in production BY CONSTRUCTION (not merely "guarded by a sibling
+                // bean" as the previous version of this comment claimed; see DevFlags javadoc).
                 log.warn("DEV MODE: auto-verify-email is ON — setting emailVerified=true for {} without email verification",
                         email);
                 user.setEmailVerified(true);
