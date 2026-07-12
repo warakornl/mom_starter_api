@@ -1,0 +1,53 @@
+name: backend-dev
+
+# DEV pipeline — fast feedback only. No prod gates, no deploy.
+# Trigger: any PR (against any base branch) + any push to a branch that is NOT main.
+# Design ref: docs/architecture/deploy-pipeline-and-cloud-options.md §1.1 / §1.2 / §1.4
+# (mom_starter_api repo copy — cloud-infra-engineer / infra-reviewer sign-off pending)
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-dev-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build + full test suite (dev/UAT profile)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run full unit + integration test suite (offline, no deploy)
+        # -o (offline) matches local dev workflow; Maven wrapper already vendored in repo
+        # (mvnw/.mvn/wrapper committed) so no network dependency-resolution surprises in CI.
+        run: ./mvnw -o clean test
+
+      - name: Publish test report summary
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: backend-dev test results
+          path: "target/surefire-reports/*.xml"
+          reporter: java-junit
+          fail-on-error: false
+
+  # NOTE: intentionally no image-build / deploy job in this workflow.
+  # DEV pipeline exists only to give fast PR/branch feedback (§1.2 table:
+  # "Auto-deploy ทันทีที่ CI ผ่าน" refers to a *separate* dev/UAT deploy target
+  # that is out of scope for this pass — no AWS dev environment exists yet either).

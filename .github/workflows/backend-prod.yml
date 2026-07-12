@@ -1,0 +1,233 @@
+name: backend-prod
+
+# PROD pipeline — gated. Every job below BLOCKS the next; nothing after
+# prod-safety-gate can run unless it is green.
+#
+# Design ref (APPROVED): docs/architecture/deploy-pipeline-and-cloud-options.md
+#   §1.1 (real code status this pass builds on)
+#   §1.2 (Path A @Profile("!prod") firewall + ProdProfileRejectsDevBeansTest design)
+#   §1.4 (5 launch-gate map — this workflow makes Gate #5 + Gate #4 real CI checks)
+#   §1.6 (CI/image hygiene: no secret echo/bake, OIDC not long-lived keys, digest-pin + private ECR)
+#
+# SCOPE OF THIS PASS: build + test + prod-safety-gate are FULLY FUNCTIONAL now.
+# image-build + deploy are SCAFFOLDED ONLY — no AWS account/OIDC role/ECR repo/ECS
+# service exists yet (that is the owner's Pass 2). Those two jobs reference secrets
+# and repo variables that do not exist yet and are gated with `if:` so a fresh
+# clone / early push does not go red before AWS is wired up.
+#
+# infra-reviewer sign-off required before this pipeline is allowed to actually run
+# the image-build/deploy jobs against a real AWS account.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  # id-token: write is required ONLY for the OIDC-assumed-role step in the deploy job.
+  # Declared here (workflow-level) but each job still narrows permissions with its
+  # own `permissions:` block — deploy is the only job that actually needs id-token.
+  id-token: write
+
+concurrency:
+  group: backend-prod-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false # never cancel an in-flight prod deploy pipeline
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 1 — build + full test suite (FUNCTIONAL NOW)
+  # ─────────────────────────────────────────────────────────────────
+  build-and-test:
+    name: build + test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run full test suite
+        run: ./mvnw clean test
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 2 — prod-safety gate (FUNCTIONAL NOW, REQUIRED CHECK)
+  # This is launch-gate #5 (dev-mode HARD-OFF in prod) and launch-gate #4
+  # (real hard-erasure / retention config) made real at CI time, per §1.2 and
+  # §1.4 row 4/5 of the approved design doc. It boots the REAL Spring context
+  # under spring.profiles.active=prod and proves:
+  #   - Assert 1: no dev-only bean exists under prod with default (unset) flags
+  #   - Assert 2 (positive-poison): dev flags deliberately set to true are
+  #     STILL completely inert under prod (closes the localhost-tunnel loophole)
+  #   - retention.days / legal-hold-days / gc.cron are actually configured
+  #     under prod, and the TombstoneGcScheduler bean is wired (not just YAML)
+  # If ANY of this fails, the pipeline STOPS here. No image is built, nothing
+  # is deployed. This is intentionally a separate job (not a step inside
+  # build-and-test) so it shows up as its own named required status check in
+  # GitHub branch protection.
+  # ─────────────────────────────────────────────────────────────────
+  prod-safety-gate:
+    name: "prod-safety gate (REQUIRED): dev-bean firewall + retention config"
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Run ProdProfileRejectsDevBeansTest + ProdRetentionConfigPresentTest under prod profile
+        # Boots the real Spring context with spring.profiles.active=prod (not a
+        # mock/regex check). Proves at build time — before any image exists —
+        # that the @Profile("!prod") dev-bean firewall (Launch-gate #5) and the
+        # retention/legal-hold/gc.cron config + scheduler wiring (Launch-gate #4)
+        # both hold. -o (offline): dependencies already resolved/cached by the
+        # build-and-test job's Maven cache key; no network access needed here.
+        run: >
+          ./mvnw -o test
+          -Dtest=ProdProfileRejectsDevBeansTest,ProdRetentionConfigPresentTest
+          -Dspring.profiles.active=prod
+
+      - name: Gate result
+        if: success()
+        run: |
+          echo "prod-safety gate PASSED."
+          echo "This proves (via a real booted Spring context, not a yaml/regex check):"
+          echo "  - Launch-gate #5: every dev-only bean (DevModeGuard, DevModeSeeder,"
+          echo "    LocalDevPasswordEmailSender, ResetTokenExposureGuard, DevFlags) is"
+          echo "    absent under prod profile, even when dev flags are poisoned to true."
+          echo "  - Launch-gate #4: retention.days / legal-hold-days / gc.cron are set"
+          echo "    under prod and TombstoneGcScheduler is actually wired."
+          echo "No image will be built and nothing will be deployed unless this job is green."
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 3 — image build (SCAFFOLDED — PENDING AWS ACCOUNT)
+  # PENDING AWS ACCOUNT — this job will not run until AWS OIDC role + ECR repo +
+  # ECS service exist (Pass 2). Gated with `if:` on a repo variable
+  # (vars.AWS_ECR_READY) so a fresh clone / early push to main does not go red
+  # before AWS is wired up. Everything below is written per §1.6 hygiene rules
+  # ahead of time so wiring Pass 2 is a matter of filling in the referenced
+  # secrets/variables, not redesigning the pipeline.
+  # ─────────────────────────────────────────────────────────────────
+  image-build:
+    name: "image build + push to ECR (PENDING AWS ACCOUNT)"
+    needs: prod-safety-gate
+    runs-on: ubuntu-latest
+    # Do not fail red on every push before AWS exists — this job simply does not
+    # run until the repo variable is explicitly set to "true" after Pass 2 wiring.
+    if: vars.AWS_ECR_READY == 'true'
+    permissions:
+      contents: read
+      id-token: write # required to assume the OIDC role below
+    outputs:
+      image-digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # §1.6: OIDC-assumed IAM role, NOT long-lived AWS_ACCESS_KEY_ID/SECRET.
+      # secrets.AWS_OIDC_ROLE_ARN does not exist yet — placeholder for Pass 2.
+      - name: Configure AWS credentials (OIDC — no long-lived keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ap-southeast-7
+          # role-session-name kept generic and non-secret; safe to log.
+          role-session-name: gha-backend-prod-image-build
+
+      - name: Login to Amazon ECR (private repo only)
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build container image
+        # References the existing Dockerfile as-is (owned by another workstream,
+        # NOT modified by this workflow). Dockerfile already: multi-stage build,
+        # non-root runtime user, no secrets baked (no ARG/ENV secret, no .env
+        # copied in) — confirmed by reading it before writing this job.
+        run: |
+          docker build \
+            -t "${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY_NAME }}:${{ github.sha }}" \
+            .
+
+      - name: Push image and capture immutable digest (digest-pin, §1.6)
+        id: push
+        # §1.6: pin by sha256 digest, never rely on a floating tag like "latest".
+        # ECR_REPOSITORY_NAME must already exist as a PRIVATE repository — this
+        # job never creates or makes a repo public.
+        run: |
+          docker push "${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY_NAME }}:${{ github.sha }}"
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' \
+            "${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY_NAME }}:${{ github.sha }}")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Pushed and digest-pinned image: ${digest}"
+          # §1.6 hygiene reminder: no secret value is ever echoed above or below —
+          # only non-secret build metadata (registry host, repo name, commit sha,
+          # resulting image digest) is printed or written to $GITHUB_OUTPUT.
+
+  # ─────────────────────────────────────────────────────────────────
+  # JOB 4 — deploy (SCAFFOLDED — PENDING AWS ACCOUNT — manual approval gate)
+  # PENDING AWS ACCOUNT — this job will not run until AWS OIDC role + ECR repo +
+  # ECS service exist (Pass 2). Uses GitHub Environment "production" so a
+  # required reviewer must approve before this job is allowed to execute, per
+  # §1.2 table ("Manual approval gate") and §1.4 row "Manual approval ก่อน prod
+  # deploy".
+  # ─────────────────────────────────────────────────────────────────
+  deploy:
+    name: "deploy to ECS Fargate ap-southeast-7 (PENDING AWS ACCOUNT, manual approval)"
+    needs: image-build
+    runs-on: ubuntu-latest
+    if: vars.AWS_ECS_READY == 'true'
+    environment:
+      name: production # GitHub Environment with a required reviewer configured
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Configure AWS credentials (OIDC — no long-lived keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ap-southeast-7
+          role-session-name: gha-backend-prod-deploy
+
+      - name: Deploy digest-pinned image to ECS Fargate
+        # Deploys the EXACT digest produced by image-build (never a floating
+        # tag) so what was tested/scanned is byte-for-byte what runs.
+        # §1.6: runtime secrets (DB creds, SES/KMS config, etc.) are injected
+        # by the ECS task definition's `secrets` block from AWS Secrets Manager
+        # at container start — never passed as build args, never baked into
+        # the image, never echoed in this step.
+        run: |
+          echo "Deploying image ${{ needs.image-build.outputs.image-digest }}"
+          echo "to ECS service ${{ vars.ECS_SERVICE_NAME }} / cluster ${{ vars.ECS_CLUSTER_NAME }}"
+          echo "in ap-southeast-7."
+          echo "PENDING AWS ACCOUNT: replace with real"
+          echo "  aws ecs update-service --cluster ... --service ... \\"
+          echo "    --task-definition ... --force-new-deployment"
+          echo "(or an ecs-deploy-task-definition action) once ECS resources exist."
+          exit 1 # placeholder — intentionally fails if this job is ever reached
+                 # before real deploy logic is filled in, so it can never
+                 # silently "succeed" doing nothing.
