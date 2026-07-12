@@ -491,4 +491,78 @@ class BirthEventMvcTest {
                 .andExpect(jsonPath("$.postpartumWeek").value(0))
                 .andExpect(jsonPath("$.postpartumDay").value(1));
     }
+
+    // =========================================================================
+    // Idempotency-Key replay (OR-BACKEND-1 / OR-INV-4 / functional-spec §8)
+    // RED: fails until birth-event wires Idempotency-Key + ProfileVerbIdempotencyStore
+    // =========================================================================
+
+    /**
+     * A repeated {@code Idempotency-Key} on birth-event must replay the ORIGINAL stored 200
+     * verbatim and must NOT re-apply the pregnant→postpartum transition a second time. Proven
+     * against REAL persistence: the profile row's {@code version} must still read 1 after the
+     * second (replayed) call — not bumped to 2 — via a direct repository read, not just
+     * response-body comparison (green-tests-can-hide-a-shell discipline).
+     */
+    @Test
+    void birthEvent_repeatedIdempotencyKey_replaysStoredResponse_doesNotDoubleApply() throws Exception {
+        createPregnantProfile();
+        String idemKey = "birth-idem-key-1";
+
+        MvcResult first = mvc.perform(post("/pregnancy-profile/birth-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", idemKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(birthBody(BIRTH_DATE)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lifecycle").value("postpartum"))
+                .andExpect(jsonPath("$.version").value(1))
+                .andReturn();
+
+        PregnancyProfile afterFirst = profiles.findByUserId(user.getId()).orElseThrow();
+        assertThat(afterFirst.getVersion()).isEqualTo(1L);
+        assertThat(afterFirst.getLifecycle()).isEqualTo("postpartum");
+
+        // Second send: SAME key, stale If-Match "0" (profile is now version 1) → a naive
+        // re-execution would 409. Idempotency replay must short-circuit and return the exact
+        // original 200 body instead.
+        MvcResult second = mvc.perform(post("/pregnancy-profile/birth-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .header("Idempotency-Key", idemKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(birthBody(BIRTH_DATE)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lifecycle").value("postpartum"))
+                .andExpect(jsonPath("$.version").value(1))
+                .andReturn();
+
+        assertThat(second.getResponse().getContentAsString())
+                .isEqualTo(first.getResponse().getContentAsString());
+
+        // REAL persistence proof: still version 1 — the mutation ran ONCE, not twice.
+        PregnancyProfile afterSecond = profiles.findByUserId(user.getId()).orElseThrow();
+        assertThat(afterSecond.getVersion()).isEqualTo(1L);
+    }
+
+    /**
+     * A DIFFERENT (brand-new) Idempotency-Key on birth-event with a stale If-Match still 409s —
+     * replay must never mask a genuine version conflict for a first-time key.
+     */
+    @Test
+    void birthEvent_newIdempotencyKey_staleIfMatch_stillReturns409() throws Exception {
+        createPregnantProfile();
+
+        mvc.perform(post("/pregnancy-profile/birth-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"99\"")
+                        .header("Idempotency-Key", "brand-new-birth-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(birthBody(BIRTH_DATE)))
+                .andExpect(status().isConflict());
+    }
 }

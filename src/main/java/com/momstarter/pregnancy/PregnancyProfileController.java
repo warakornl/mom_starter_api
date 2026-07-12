@@ -167,16 +167,29 @@ public class PregnancyProfileController {
      *
      * <p>The {@code X-Client-Date} header MUST be sent by clients (protocol-optional, server falls
      * back to UTC, but a UTC fallback can false-reject a legitimate TH birth after local midnight).
+     *
+     * <p><strong>{@code Idempotency-Key}</strong> (optional, OR-BACKEND-1): a repeated key
+     * replays the ORIGINAL stored 200 verbatim instead of re-applying the pregnant→postpartum
+     * transition (functional-spec §8, OR-INV-4).
      */
     @PostMapping("/birth-event")
     public ResponseEntity<?> birthEvent(
             @AuthenticationPrincipal Jwt jwt,
             @RequestHeader(value = "X-Client-Date", required = false) String clientDateHeader,
             @RequestHeader(value = "If-Match", required = false) String ifMatch,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestBody BirthEventInput input) {
 
         UUID userId = UUID.fromString(jwt.getSubject());
         LocalDate clientDate = parseClientDate(clientDateHeader);
+
+        if (idempotencyKey != null) {
+            Optional<ProfileVerbIdempotencyStore.StoredResult> replay =
+                    idempotencyStore.get(userId, idempotencyKey);
+            if (replay.isPresent()) {
+                return ResponseEntity.status(replay.get().status()).body(replay.get().body());
+            }
+        }
 
         PregnancyProfileResponse response;
         try {
@@ -185,6 +198,9 @@ public class PregnancyProfileController {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getCurrentProfile());
         }
 
+        if (idempotencyKey != null) {
+            idempotencyStore.put(userId, idempotencyKey, HttpStatus.OK.value(), response);
+        }
         return ResponseEntity.ok(response);
     }
 
