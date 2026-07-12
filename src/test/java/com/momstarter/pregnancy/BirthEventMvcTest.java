@@ -397,6 +397,31 @@ class BirthEventMvcTest {
     }
 
     // =========================================================================
+    // 403-before-404 ordering (functional-spec pregnancy-loss-recording-functional-spec.md
+    // §3.1 — CANONICAL ruling, SA 2026-07-12): consent must be checked before
+    // profile-existence so a caller whose consent is withdrawn/absent can never
+    // distinguish "no profile" (404) from "profile exists but I lack consent" (403)
+    // by response code alone. Fail-on-revert: flips back to 404 if someone reverts
+    // the check order in PregnancyProfileService#recordBirthEvent.
+    // =========================================================================
+
+    @Test
+    void birthEvent_consentDenied_noProfileEitherWay_returns403NotFound() throws Exception {
+        // No profile created at all — consent gate MUST still fire first (403, not 404).
+        when(consentChecker.isGranted(any(), eq("general_health"))).thenReturn(false);
+
+        mvc.perform(post("/pregnancy-profile/birth-event")
+                        .header("Authorization", "Bearer " + bearer)
+                        .header("X-Client-Date", CLIENT_DATE)
+                        .header("If-Match", "\"0\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(birthBody(BIRTH_DATE)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("consent_required"))
+                .andExpect(jsonPath("$.details").value("general_health"));
+    }
+
+    // =========================================================================
     // Authentication required
     // =========================================================================
 

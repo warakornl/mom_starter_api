@@ -251,11 +251,13 @@ public class PregnancyProfileService {
     /**
      * Records a birth event, transitioning {@code lifecycle: pregnant → postpartum}.
      *
-     * <p>Preconditions, in order:
+     * <p>Preconditions, in order (functional-spec pregnancy-loss-recording-functional-spec.md
+     * §3.1 — CANONICAL ruling, SA 2026-07-12: consent (403) BEFORE profile-existence (404),
+     * governing ALL three {@code /pregnancy-profile} state-transition verbs):
      * <ol>
+     *   <li>Consent gate: {@code general_health} must be granted — {@code 403 consent_required}.</li>
      *   <li>Profile must exist (live, non-deleted) — {@code 404 not_found} if absent.</li>
      *   <li>{@code lifecycle == "ended"} — {@code 409 invalid_lifecycle_state (details:"ended")}.</li>
-     *   <li>Consent gate: {@code general_health} must be granted — {@code 403 consent_required}.</li>
      *   <li>{@code If-Match} header — absent → {@code 428}; stale version → {@code 409} with
      *       the current authoritative profile in the body.</li>
      *   <li>Birth-date bounds (application-layer, non-judgmental typo-guards — OQ-10):
@@ -293,17 +295,21 @@ public class PregnancyProfileService {
     public PregnancyProfileResponse recordBirthEvent(UUID userId, BirthEventInput input,
                                                      String ifMatch, LocalDate clientDate) {
 
-        // 1 — Profile must exist
-        PregnancyProfile profile = requireProfile(userId);
-
-        // 2 — lifecycle == "ended" is a terminal state (OQ-PP7 — write path deferred)
-        if ("ended".equals(profile.getLifecycle())) {
-            throw new ApiException(409, "invalid_lifecycle_state", "ended");
-        }
-
-        // 3 — Consent gate (general_health — same gate as PUT /pregnancy-profile)
+        // 1 — Consent gate (general_health — same gate as PUT /pregnancy-profile). Checked
+        // BEFORE profile existence per functional-spec §3.1 (CANONICAL, SA 2026-07-12): a
+        // consent-withdrawn caller always gets 403 regardless of whether a profile exists,
+        // matching recordLossEvent/reopen exactly. The consent check takes only userId, so
+        // it is safe to run before the profile is loaded.
         if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
             throw new ApiException(403, "consent_required", GENERAL_HEALTH);
+        }
+
+        // 2 — Profile must exist
+        PregnancyProfile profile = requireProfile(userId);
+
+        // 3 — lifecycle == "ended" is a terminal state (OQ-PP7 — write path deferred)
+        if ("ended".equals(profile.getLifecycle())) {
+            throw new ApiException(409, "invalid_lifecycle_state", "ended");
         }
 
         // 4 — If-Match required (B2: mandatory on all direct-REST mutations to existing rows)
@@ -425,12 +431,11 @@ public class PregnancyProfileService {
     public PregnancyProfileResponse recordLossEvent(UUID userId, LossEventInput input,
                                                     String ifMatch, LocalDate clientDate) {
 
-        // 1 — Consent gate (general_health) — 403-BEFORE-404 per functional-spec §3: checked
-        // before profile existence so a consent-withdrawn caller gets a consistent 403
-        // regardless of whether a profile exists (avoids leaking profile existence via the
-        // 403-vs-404 status distinction). (birth-event still checks profile-existence first —
-        // a pre-existing divergence tracked separately for system-analyst to rule on; not
-        // changed here, see recordBirthEvent.)
+        // 1 — Consent gate (general_health) — 403-BEFORE-404 per functional-spec §3.1
+        // (CANONICAL, SA 2026-07-12): checked before profile existence so a consent-withdrawn
+        // caller gets a consistent 403 regardless of whether a profile exists (avoids leaking
+        // profile existence via the 403-vs-404 status distinction). This ordering governs ALL
+        // three /pregnancy-profile state-transition verbs, including recordBirthEvent.
         if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
             throw new ApiException(403, "consent_required", GENERAL_HEALTH);
         }
@@ -517,8 +522,9 @@ public class PregnancyProfileService {
     @Transactional
     public PregnancyProfileResponse reopen(UUID userId, String ifMatch, LocalDate clientDate) {
 
-        // 1 — Consent gate (general_health) — 403-BEFORE-404 per functional-spec §3 (same
-        // ordering rationale as recordLossEvent; birth-event divergence tracked separately).
+        // 1 — Consent gate (general_health) — 403-BEFORE-404 per functional-spec §3.1
+        // (CANONICAL, SA 2026-07-12; same ordering as recordLossEvent and recordBirthEvent —
+        // no verb diverges).
         if (!consentChecker.isGranted(userId, GENERAL_HEALTH)) {
             throw new ApiException(403, "consent_required", GENERAL_HEALTH);
         }
