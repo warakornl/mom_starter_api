@@ -2,7 +2,9 @@ package com.momstarter.prodgate;
 
 import com.momstarter.MomStarterApiApplication;
 import com.momstarter.auth.PasswordEmailSender;
+import com.momstarter.auth.RegistrationService;
 import com.momstarter.auth.VerificationEmailSender;
+import com.momstarter.dev.DevFlags;
 import com.momstarter.dev.DevModeGuard;
 import com.momstarter.dev.DevModeSeeder;
 import com.momstarter.dev.LocalDevPasswordEmailSender;
@@ -41,6 +43,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  *       regardless of what the datasource URL looks like. This closes the localhost-tunnel
  *       loophole that a {@code @ConditionalOnProperty}-only guard cannot close (see
  *       {@code deploy-pipeline-and-cloud-options.md} §1.2).</li>
+ *   <li><b>Assert 3 (behavioural poison case, Pass-1-regression gate)</b>: same poisoned prod
+ *       context ALSO proves that {@link DevFlags} — the single binding-layer holder for every
+ *       {@code momstarter.dev.*} flag — is absent from the context (it is {@code @Profile
+ *       ("!prod")}, same as the four dev beans), AND that {@link RegistrationService}'s own
+ *       constructed {@code autoVerifyEmail} field resolves to {@code false} as a direct
+ *       consequence. This is the assertion the original Pass-1 poison test was missing: it only
+ *       checked that the four dev BEANS were absent, never that a plain {@code @Service} which
+ *       happened to bind the same property directly (as {@code RegistrationService} used to)
+ *       was ALSO safe. See {@code RegistrationServiceProdSafetyTest} for the focused,
+ *       registration-outcome-level version of this same gate.</li>
  * </ul>
  *
  * <p><b>Design note — deviation from the pipeline-design doc's literal wording:</b> the design
@@ -171,6 +183,27 @@ class ProdProfileRejectsDevBeansTest {
                     () -> context.getBean(LocalDevPasswordEmailSender.class));
             assertThrows(NoSuchBeanDefinitionException.class,
                     () -> context.getBean(ResetTokenExposureGuard.class));
+
+            // Assert 3 — Pass-1-regression gate (fail-on-revert): DevFlags itself must be absent
+            // under this poisoned prod context...
+            assertThrows(NoSuchBeanDefinitionException.class, () -> context.getBean(DevFlags.class));
+
+            // ...AND the real, fully-wired RegistrationService bean in THIS running context must
+            // have resolved its autoVerifyEmail field to false as a direct consequence — i.e. a
+            // brand-new registration in this poisoned "prod + auto-verify-email=true" context
+            // does NOT skip email verification. This is exactly the behavioural outcome the
+            // original version of this test never checked, which is how the Pass-1 regression
+            // (RegistrationService binding momstarter.dev.auto-verify-email directly via @Value,
+            // bypassing the @Profile("!prod") firewall) escaped detection. If RegistrationService
+            // (or any future consumer) regresses back to a raw @Value bind of this property, this
+            // assertion fails immediately.
+            RegistrationService registrationService = context.getBean(RegistrationService.class);
+            assertThat(org.springframework.test.util.ReflectionTestUtils
+                    .getField(registrationService, "autoVerifyEmail"))
+                    .as("PROD POISON GATE: RegistrationService's effective autoVerifyEmail must be "
+                            + "false in a prod context even when the raw "
+                            + "momstarter.dev.auto-verify-email property is poisoned to true")
+                    .isEqualTo(false);
         } finally {
             clearSystemProps(props);
         }
@@ -235,6 +268,25 @@ class ProdProfileRejectsDevBeansTest {
                             devBean.getSimpleName())
                     .containsExactly("!prod");
         }
+    }
+
+    /**
+     * Same non-vacuousness proof as {@link #allFourDevBeansCarryProfileNotProdAnnotation()},
+     * applied to {@link DevFlags} — the single binding-layer holder introduced to close the
+     * Pass-1 regression where {@link RegistrationService} bound
+     * {@code momstarter.dev.auto-verify-email} directly via {@code @Value}, bypassing the
+     * {@code @Profile("!prod")} firewall entirely. If {@code @Profile("!prod")} is ever removed
+     * from {@link DevFlags}, this test fails immediately and unconditionally.
+     */
+    @Test
+    void devFlagsCarriesProfileNotProdAnnotation() {
+        Profile profile = DevFlags.class.getAnnotation(Profile.class);
+        assertThat(profile)
+                .as("DevFlags must carry @Profile so it is excluded at bean-creation time under "
+                        + "the prod profile — every consumer reads it through Optional<DevFlags> "
+                        + "and must see Optional.empty() (i.e. effective false) under prod")
+                .isNotNull();
+        assertThat(profile.value()).containsExactly("!prod");
     }
 
     /**
