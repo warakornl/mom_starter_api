@@ -401,6 +401,22 @@ class ConsentMvcTest {
     }
 
     // -------------------------------------------------------------------------
+    // GET /account/consents — malformed cursor
+    // -------------------------------------------------------------------------
+
+    @Test
+    void get_malformedCursor_returns400InvalidCursor() throws Exception {
+        // Locks in the invalid_cursor 400 path across the cursor-codec format change
+        // (epochMilli:uuid → epochSeconds:nanoOfSecond:uuid, 2026-07-12 sub-millisecond-
+        // truncation fix) — an unparseable cursor must still be rejected cleanly, not 500.
+        mvc.perform(get("/account/consents")
+                        .header("Authorization", bearer)
+                        .param("cursor", "not-a-valid-cursor"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("invalid_cursor"));
+    }
+
+    // -------------------------------------------------------------------------
     // GET /account/consents — auth
     // -------------------------------------------------------------------------
 

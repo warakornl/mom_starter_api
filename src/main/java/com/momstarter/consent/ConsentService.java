@@ -103,9 +103,23 @@ public class ConsentService {
      * Returns a cursor-paginated list of consent records for the authenticated user,
      * ordered by {@code (granted_at DESC, id DESC)} (most recent first).
      *
-     * <p>Cursor format: URL-safe base64 of {@code "<epochMs>:<uuid>"}.
+     * <p>Cursor format: URL-safe base64 of {@code "<epochSeconds>:<nanoOfSecond>:<uuid>"}.
      * A missing or null cursor returns the first page.  An unparseable cursor
      * returns {@code 400 invalid_cursor}.
+     *
+     * <p><strong>Full-instant precision, not millisecond-truncated (fixed 2026-07-12,
+     * systematic-debugging of a full-suite flake):</strong> {@code grantedAt} is stamped via
+     * {@code Instant.now()}, which on this JVM/clock has genuine sub-millisecond (microsecond)
+     * resolution — two rows inserted a few microseconds apart routinely share the SAME
+     * {@code epochMilli}. Encoding/decoding the cursor via {@code Instant.toEpochMilli()} /
+     * {@code Instant.ofEpochMilli()} used to zero that sub-millisecond remainder, so a
+     * cursor built from the newer of two same-millisecond rows could decode to an
+     * {@code Instant} that sits STRICTLY BETWEEN the two rows' true timestamps — the keyset
+     * predicate ({@code grantedAt < cursor OR (grantedAt = cursor AND id < cursorId)}) then
+     * matched neither branch for the older row, silently dropping it from the next page
+     * ({@code items.length() == 0}). Encoding {@code getEpochSecond()}/{@code getNano()}
+     * separately preserves the exact {@link Instant} round-trip so the keyset comparison
+     * against the DB's real (sub-millisecond-precise) {@code timestamptz} column is exact.
      *
      * @param userId authenticated user id
      * @param cursor opaque pagination cursor (null or absent → first page)
@@ -124,8 +138,9 @@ public class ConsentService {
                     userId, PageRequest.of(0, fetchSize));
         } else {
             String[] parts = decodeCursor(cursor);
-            Instant cursorGrantedAt = Instant.ofEpochMilli(Long.parseLong(parts[0]));
-            UUID cursorId = UUID.fromString(parts[1]);
+            Instant cursorGrantedAt = Instant.ofEpochSecond(
+                    Long.parseLong(parts[0]), Long.parseLong(parts[1]));
+            UUID cursorId = UUID.fromString(parts[2]);
             rows = consentRecordRepository.findByUserIdBeforeCursor(
                     userId, cursorGrantedAt, cursorId, PageRequest.of(0, fetchSize));
         }
@@ -183,8 +198,14 @@ public class ConsentService {
         return Math.min(requested, MAX_LIMIT);
     }
 
+    /**
+     * Encodes the cursor as {@code "<epochSeconds>:<nanoOfSecond>:<uuid>"} — full
+     * {@link Instant} precision (seconds + nanos separately), NOT a lossy
+     * {@code epochMilli}. See {@link #list} javadoc for why millisecond truncation is unsafe
+     * here (two {@code grantedAt} rows can share an {@code epochMilli}).
+     */
     private static String encodeCursor(Instant grantedAt, UUID id) {
-        String raw = grantedAt.toEpochMilli() + ":" + id.toString();
+        String raw = grantedAt.getEpochSecond() + ":" + grantedAt.getNano() + ":" + id.toString();
         return Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(raw.getBytes(StandardCharsets.UTF_8));
     }
@@ -193,13 +214,14 @@ public class ConsentService {
         try {
             byte[] bytes = Base64.getUrlDecoder().decode(cursor);
             String raw = new String(bytes, StandardCharsets.UTF_8);
-            String[] parts = raw.split(":", 2);
-            if (parts.length != 2) {
+            String[] parts = raw.split(":", 3);
+            if (parts.length != 3) {
                 throw new ApiException(400, "invalid_cursor");
             }
-            // Validate both parts are parseable before returning
-            Long.parseLong(parts[0]);   // epoch millis
-            UUID.fromString(parts[1]);  // UUID
+            // Validate all parts are parseable before returning
+            Long.parseLong(parts[0]);   // epoch seconds
+            Long.parseLong(parts[1]);   // nano-of-second
+            UUID.fromString(parts[2]);  // UUID
             return parts;
         } catch (IllegalArgumentException e) {
             // covers Base64 decode failure, UUID.fromString failure, and Long.parseLong failure
