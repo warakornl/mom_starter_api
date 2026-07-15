@@ -364,7 +364,7 @@ class ConsumptionMappingSyncMvcTest {
     void get_consumptionMappings_generalHealthGranted_returns200() throws Exception {
         grantOnlyGeneralHealth();
 
-        mvc.perform(get("/v1/consumption-mappings")
+        mvc.perform(get("/consumption-mappings")
                 .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items").isArray());
@@ -374,7 +374,7 @@ class ConsumptionMappingSyncMvcTest {
     void get_consumptionMappings_generalHealthMissing_returns403() throws Exception {
         denyGeneralHealth();
 
-        mvc.perform(get("/v1/consumption-mappings")
+        mvc.perform(get("/consumption-mappings")
                 .header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden());
     }
@@ -401,7 +401,7 @@ class ConsumptionMappingSyncMvcTest {
         diaperMapping.setEnabled(true);
         mappings.saveAndFlush(diaperMapping);
 
-        var result = mvc.perform(get("/v1/consumption-mappings")
+        var result = mvc.perform(get("/consumption-mappings")
                 .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andReturn();
@@ -448,7 +448,7 @@ class ConsumptionMappingSyncMvcTest {
         formula.setEnabled(true);
         mappings.saveAndFlush(formula);
 
-        var result = mvc.perform(get("/v1/consumption-mappings")
+        var result = mvc.perform(get("/consumption-mappings")
                 .header("Authorization", "Bearer " + token)
                 .param("activityType", "diaper_change"))
                 .andExpect(status().isOk())
@@ -467,7 +467,7 @@ class ConsumptionMappingSyncMvcTest {
         // Any value outside feeding_formula|diaper_change|bathing must be rejected with 400
         grantOnlyGeneralHealth();
 
-        mvc.perform(get("/v1/consumption-mappings")
+        mvc.perform(get("/consumption-mappings")
                 .header("Authorization", "Bearer " + token)
                 .param("activityType", "invalid_value"))
                 .andExpect(status().isBadRequest())
@@ -489,7 +489,7 @@ class ConsumptionMappingSyncMvcTest {
         formula.setEnabled(true);
         mappings.saveAndFlush(formula);
 
-        var result = mvc.perform(get("/v1/consumption-mappings")
+        var result = mvc.perform(get("/consumption-mappings")
                 .header("Authorization", "Bearer " + token)
                 .param("activityType", "feeding_formula"))
                 .andExpect(status().isOk())

@@ -46,7 +46,7 @@ import java.util.stream.Collectors;
  * </ul>
  */
 @RestController
-@RequestMapping("/v1/consumption-mappings")
+@RequestMapping("/consumption-mappings")
 class ConsumptionMappingController {
 
     private static final int DEFAULT_LIMIT = 100;
