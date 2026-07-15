@@ -49,7 +49,7 @@ import java.util.stream.Collectors;
  * no {@code usesRemainingInOpenContainer}). Server NEVER parses or aggregates amountSubUnits (G4).
  */
 @RestController
-@RequestMapping("/v1/feeding-sessions")
+@RequestMapping("/feeding-sessions")
 class FeedingSessionController {
 
     private static final int DEFAULT_LIMIT = 100;

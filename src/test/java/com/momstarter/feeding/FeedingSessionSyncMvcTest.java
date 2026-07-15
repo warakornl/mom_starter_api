@@ -461,7 +461,7 @@ class FeedingSessionSyncMvcTest {
     void get_feedingSessions_dualConsentGranted_returns200() throws Exception {
         grantDualConsent();
 
-        mvc.perform(get("/v1/feeding-sessions")
+        mvc.perform(get("/feeding-sessions")
                 .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items").isArray());
@@ -471,7 +471,7 @@ class FeedingSessionSyncMvcTest {
     void get_feedingSessions_infantFeedingMissing_returns403() throws Exception {
         grantOnlyGeneralHealth(); // infant_feeding not granted
 
-        mvc.perform(get("/v1/feeding-sessions")
+        mvc.perform(get("/feeding-sessions")
                 .header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden());
     }
@@ -480,7 +480,7 @@ class FeedingSessionSyncMvcTest {
     void get_feedingSessions_generalHealthMissing_returns403() throws Exception {
         denyGeneralHealth();
 
-        mvc.perform(get("/v1/feeding-sessions")
+        mvc.perform(get("/feeding-sessions")
                 .header("Authorization", "Bearer " + token))
                 .andExpect(status().isForbidden());
     }
